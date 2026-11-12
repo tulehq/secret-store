@@ -32,7 +32,7 @@ func New(cfg *Config, extra ...gas.Option) (*gas.App, error) {
 	registerInfraServices(app, cfg, logger)
 	registerAppServices(app, cfg)
 	registerAppModules(app)
-	installMiddleware(app.Router(), cfg)
+	installMiddleware(app.Router(), cfg, logger)
 	app.ReadyFunc(seedSecrets(cfg.Store.Seed))
 
 	return app, nil
@@ -53,14 +53,14 @@ func registerAppModules(app *gas.App) {
 	app.RegisterSingletonService[*health.Module](health.NewModule)
 }
 
-func installMiddleware(r *gas.Router, cfg *Config) {
+func installMiddleware(r *gas.Router, cfg *Config, logger gas.Logger) {
 	r.UseMiddlewareFunc(nil, httpx.RequestID(cfg.Env))
 
 	// No X-Forwarded-For handling: nothing is expected in front of this
 	// service, and the header is unsigned, so trusting a hop would only let a
 	// caller choose the client IP that ends up in the logs.
 
-	r.UseMiddlewareFunc(nil, withRequestLogger)
+	r.UseMiddlewareFunc(nil, withRequestLogger(logger))
 
 	r.UseMiddlewareFunc(nil, gas.RequestLogger[httpx.RequestLogger]())
 
