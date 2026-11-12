@@ -24,7 +24,7 @@ The image is based on Alpine, so `docker exec -it <container> sh` gives you a
 shell. It runs as the unprivileged `nonroot` user, and its Docker health check
 polls `/_ready`.
 
-From source (Go 1.27):
+From source (Go 1.27.4 or later):
 
 ```sh
 make build
@@ -48,9 +48,10 @@ Settings come from environment variables prefixed with `TULE_`, and from a
 | `TULE_Store_Seed` | unset | JSON object of secret name to value, created at startup if missing |
 | `TULE_HSTS_MaxAge` | unset | `Strict-Transport-Security` max age; the header is only sent when set |
 | `TULE_Server_ReadTimeout` | `30s` | How long the server may take to read a request, body included |
+| `TULE_Server_ReadHeaderTimeout` | `30s` | How long it may take to read a request's headers; must be positive |
 | `TULE_Server_WriteTimeout` | `30s` | How long it may take to write a response |
 | `TULE_Server_IdleTimeout` | `2m` | How long a keep-alive connection may sit idle between requests |
-| `TULE_Server_ShutdownTimeout` | `5s` | How long a graceful shutdown waits for in-flight requests |
+| `TULE_Server_ShutdownTimeout` | `7s` | How long a graceful shutdown waits for in-flight requests |
 | `TULE_Auth_AccessKeyID` | required | The access key clients sign requests with |
 | `TULE_Auth_SecretAccessKey` | required | Its secret |
 | `TULE_GasEnv` | | `development` logs console output at trace level, `production` logs at warn level, `testing` disables logging |

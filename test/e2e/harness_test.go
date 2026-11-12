@@ -18,7 +18,7 @@ import (
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/gasmod/gas"
-	"github.com/gasmod/gas/config/providers"
+	"github.com/gasmod/gas/config"
 
 	"tule.dev/secret-store/internal/app"
 )
@@ -63,9 +63,9 @@ func startServer(t *testing.T, env map[string]string) *server {
 
 	setEnv(t, env)
 
-	cfg, err := app.LoadConfigFrom(providers.NewEnvProvider(
-		providers.WithEnvSeparator("_"),
-		providers.WithEnvPrefix("TULE_"),
+	cfg, err := app.LoadConfigFrom(config.NewEnvProvider(
+		config.WithEnvSeparator("_"),
+		config.WithEnvPrefix("TULE_"),
 	))
 	if err != nil {
 		t.Fatalf("load config: %v", err)
@@ -142,6 +142,14 @@ func (s *server) Stop(t *testing.T) {
 	}
 	s.stopped = true
 
+	// The client may hold a spare connection it dialed for a request another
+	// connection then served. The server sees it as new and closes it only
+	// once it is 5s old, which would make every such test wait that long.
+	// The tests are done with the client by now, so it closes them first.
+	// TestShutdownWithAnUnusedConnectionIsClean covers the production case,
+	// a client that keeps such a connection open through the shutdown.
+	s.client.CloseIdleConnections()
+
 	if err := s.app.Stop(context.Background()); err != nil {
 		t.Errorf("stop app: %v", err)
 	}
@@ -175,9 +183,9 @@ func clientFor(srv *server, opts ...func(*awssm.Options)) *awssm.Client {
 func startFailing(t *testing.T) error {
 	t.Helper()
 
-	cfg, err := app.LoadConfigFrom(providers.NewEnvProvider(
-		providers.WithEnvSeparator("_"),
-		providers.WithEnvPrefix("TULE_"),
+	cfg, err := app.LoadConfigFrom(config.NewEnvProvider(
+		config.WithEnvSeparator("_"),
+		config.WithEnvPrefix("TULE_"),
 	))
 	if err != nil {
 		return err

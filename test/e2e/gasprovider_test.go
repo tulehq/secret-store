@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/gasmod/gas/config"
-	"github.com/gasmod/gas/config/providers/secretsmanager"
+	"github.com/gasmod/gas/config/secretsmanager"
 )
 
 // TestGasConfigProvider is the compatibility target the service exists for:
