@@ -75,6 +75,26 @@ func TestUnknownOperationIsReported(t *testing.T) {
 	requireCode(t, err, "UnknownOperationException")
 }
 
+func TestATargetMustBeExactlyAnOperationUnderTheServicePrefix(t *testing.T) {
+	srv := startServer(t, nil)
+	c := clientFor(srv)
+
+	for _, target := range []string{
+		"ListSecrets",
+		"x.secretsmanager.ListSecrets",
+		"SecretsManager.ListSecrets",
+		"secretsmanager.",
+	} {
+		t.Run(target, func(t *testing.T) {
+			_, err := c.ListSecrets(context.Background(), &awssm.ListSecretsInput{},
+				func(o *awssm.Options) {
+					o.APIOptions = append(o.APIOptions, setTargetHeader(target))
+				})
+			requireCode(t, err, "UnknownOperationException")
+		})
+	}
+}
+
 func TestSeededSecretsAndRestart(t *testing.T) {
 	root := t.TempDir()
 	seed := `{"example/seeded":{"Host":"db.internal"},"example/plain":"placeholder"}`

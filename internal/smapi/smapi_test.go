@@ -20,7 +20,12 @@ func TestOperation(t *testing.T) {
 		want   string
 	}{
 		{name: "SDK target", header: "secretsmanager.GetSecretValue", want: "GetSecretValue"},
-		{name: "bare operation", header: "GetSecretValue", want: "GetSecretValue"},
+		{name: "bare operation", header: "GetSecretValue", want: ""},
+		{
+			name: "prefix inside the header", header: "x.secretsmanager.GetSecretValue",
+			want: "",
+		},
+		{name: "uppercase prefix", header: "SecretsManager.GetSecretValue", want: ""},
 		{name: "empty", header: "", want: ""},
 		{name: "prefix only", header: "secretsmanager.", want: ""},
 		{name: "another service", header: "s3.GetObject", want: ""},
