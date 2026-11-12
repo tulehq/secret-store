@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -21,10 +20,17 @@ import (
 	awssm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
-// partialRequest is a request whose headers never end: no blank line follows,
-// so the server is still reading the request when its read timeout expires.
-// It tests the server rather than any handler, so no handler ever runs.
-const partialRequest = "POST / HTTP/1.1\r\nHost: secret-store.test\r\n"
+// stallInBody writes a signed request whose headers are complete and whose
+// body stops short of its Content-Length, so the server is still reading the
+// body, under ReadTimeout and past ReadHeaderTimeout, when the test reads.
+func stallInBody(t *testing.T, srv *server, conn net.Conn) {
+	t.Helper()
+
+	body := []byte(`{"Name":"example/stalled","SecretString":"placeholder"}`)
+	if _, err := conn.Write(append(signedRequestBytes(t, srv, body), body[:20]...)); err != nil {
+		t.Fatalf("write stalled request: %v", err)
+	}
+}
 
 func TestServerTimeoutsAreInForce(t *testing.T) {
 	srv := startServer(t, nil)
@@ -40,6 +46,7 @@ func TestServerTimeoutsAreInForce(t *testing.T) {
 		want time.Duration
 	}{
 		{name: "read", got: got.ReadTimeout, want: 30 * time.Second},
+		{name: "read header", got: got.ReadHeaderTimeout, want: 30 * time.Second},
 		{name: "write", got: got.WriteTimeout, want: 30 * time.Second},
 		{name: "idle", got: got.IdleTimeout, want: 2 * time.Minute},
 	}
@@ -56,33 +63,35 @@ func TestReadTimeoutEndsAStalledRequest(t *testing.T) {
 	srv := startServer(t, map[string]string{"TULE_Server_ReadTimeout": "300ms"})
 
 	conn := dial(t, srv.Addr)
-	if _, err := io.WriteString(conn, partialRequest); err != nil {
-		t.Fatalf("write partial request: %v", err)
-	}
+	stallInBody(t, srv, conn)
 
-	// The server must give up on the stalled request. Without a read timeout
-	// in force this read blocks until the test's own deadline.
+	// The server must give up on the stalled body. The signature check reads
+	// the body, so it sees the read fail and answers with an error. Without a
+	// read timeout in force this read blocks until the test's own deadline.
 	start := time.Now()
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
-	if _, err := conn.Read(make([]byte, 1)); err == nil {
-		t.Fatal("want the connection closed or an error, got a readable response")
-	} else if isTimeout(err) {
+	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if isTimeout(err) {
 		t.Fatalf("the server held the stalled connection for %s", time.Since(start))
 	}
+	requireNoErr(t, err, "read the response to the stalled request")
+	defer func() { _ = res.Body.Close() }()
+
+	requireEqual(t, res.StatusCode, http.StatusBadRequest, "stalled request status")
+	requireEqual(t, errorType(t, res.Body), "InvalidParameterException",
+		"stalled request error type")
 }
 
 func TestALongReadTimeoutHoldsTheSameRequestOpen(t *testing.T) {
 	// The counterpart to the test above: with a long read timeout the server
-	// waits, which is what shows the short timeout is doing the work there
+	// waits for the rest of the body, which is what shows the short timeout is doing the work there
 	// and not something else closing connections.
 	srv := startServer(t, map[string]string{"TULE_Server_ReadTimeout": "60s"})
 
 	conn := dial(t, srv.Addr)
-	if _, err := io.WriteString(conn, partialRequest); err != nil {
-		t.Fatalf("write partial request: %v", err)
-	}
+	stallInBody(t, srv, conn)
 
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
@@ -117,6 +126,20 @@ func TestShutdownClosesThePort(t *testing.T) {
 	if _, dErr := net.DialTimeout("tcp", srv.Addr, time.Second); dErr == nil {
 		t.Fatal("want the listener closed after shutdown, got a connection")
 	}
+}
+
+func TestShutdownWithAnUnusedConnectionIsClean(t *testing.T) {
+	srv := startServer(t, nil)
+
+	// A connection that is opened and never sent a request, as an SDK
+	// client's spare one is. net/http counts it as idle, and closes it, only
+	// 5s to 6s after it opened, so a shorter shutdown timeout runs out on it
+	// and Stop reports the deadline, which fails the process on SIGTERM.
+	dial(t, srv.Addr)
+	time.Sleep(100 * time.Millisecond) // let the server accept it
+
+	// Stop fails the test if App.Stop returns an error.
+	srv.Stop(t)
 }
 
 func TestGracefulShutdownCompletesAnInFlightRequest(t *testing.T) {
@@ -173,7 +196,7 @@ func TestGracefulShutdownCompletesAnInFlightRequest(t *testing.T) {
 
 // waitForHandler gives the server a moment to reach the point the test is
 // about: reading the body for the first wait, and starting the shutdown for
-// the second. It is well inside the 5s shutdown timeout.
+// the second. It is well inside the 7s shutdown timeout.
 func waitForHandler() {
 	time.Sleep(200 * time.Millisecond)
 }

@@ -1,12 +1,13 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/gasmod/gas"
-	"github.com/gasmod/gas/config/providers"
+	"github.com/gasmod/gas/config"
 )
 
 func loadEnvConfig(t *testing.T, id, secret string) (*Config, error) {
@@ -15,9 +16,9 @@ func loadEnvConfig(t *testing.T, id, secret string) (*Config, error) {
 	t.Setenv("TULE_Auth_AccessKeyID", id)
 	t.Setenv("TULE_Auth_SecretAccessKey", secret)
 
-	return LoadConfigFrom(providers.NewEnvProvider(
-		providers.WithEnvSeparator(envVarSeparator),
-		providers.WithEnvPrefix(envVarPrefix),
+	return LoadConfigFrom(config.NewEnvProvider(
+		config.WithEnvSeparator(envVarSeparator),
+		config.WithEnvPrefix(envVarPrefix),
 	))
 }
 
@@ -86,9 +87,10 @@ func TestLoadConfigSetsServerTimeouts(t *testing.T) {
 		want time.Duration
 	}{
 		{name: "read", got: gasCfg.Server.ReadTimeout, want: 30 * time.Second},
+		{name: "read header", got: gasCfg.Server.ReadHeaderTimeout, want: 30 * time.Second},
 		{name: "write", got: gasCfg.Server.WriteTimeout, want: 30 * time.Second},
 		{name: "idle", got: gasCfg.Server.IdleTimeout, want: 2 * time.Minute},
-		{name: "shutdown", got: gasCfg.Server.ShutdownTimeout, want: 5 * time.Second},
+		{name: "shutdown", got: gasCfg.Server.ShutdownTimeout, want: 7 * time.Second},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,5 +98,55 @@ func TestLoadConfigSetsServerTimeouts(t *testing.T) {
 				t.Fatalf("%s timeout = %s, want %s", tt.name, tt.got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadConfigReadsTheEnvironment(t *testing.T) {
+	cfg, err := loadEnvConfig(t, "AKID", "secret")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	// TULE_GasEnv picks the logger, and gas binds its own Config.Env from the
+	// same key, so both must see it.
+	if got := cfg.Env; got != gas.EnvTesting {
+		t.Fatalf("env = %q, want %q", got, gas.EnvTesting)
+	}
+
+	gasCfg := gas.DefaultConfig()
+	if bErr := cfg.store.Bind(gasCfg); bErr != nil {
+		t.Fatalf("bind gas config: %v", bErr)
+	}
+	if got := gasCfg.Env; got != gas.EnvTesting {
+		t.Fatalf("gas env = %q, want %q", got, gas.EnvTesting)
+	}
+}
+
+func TestZeroReadTimeoutStarts(t *testing.T) {
+	// 0 is net/http's "no limit" for a whole request. Gas still requires a
+	// positive header timeout, which the default provides, so the app starts.
+	t.Setenv("TULE_Server_ReadTimeout", "0")
+	t.Setenv("TULE_Store_RootDir", t.TempDir())
+
+	cfg, err := loadEnvConfig(t, "AKID", "secret")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	if sErr := a.Start(context.Background()); sErr != nil {
+		t.Fatalf("start app: %v", sErr)
+	}
+	t.Cleanup(func() {
+		if sErr := a.Shutdown(context.Background()); sErr != nil {
+			t.Errorf("shutdown: %v", sErr)
+		}
+	})
+
+	if got := a.Config().Server.ReadTimeout; got != 0 {
+		t.Fatalf("read timeout = %s, want 0", got)
 	}
 }

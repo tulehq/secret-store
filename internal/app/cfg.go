@@ -7,8 +7,6 @@ import (
 
 	"github.com/gasmod/gas"
 	"github.com/gasmod/gas/config"
-	"github.com/gasmod/gas/config/extensions/gasenv"
-	"github.com/gasmod/gas/config/providers"
 
 	"tule.dev/secret-store/internal/services/secrets/dirimpl"
 )
@@ -39,7 +37,7 @@ type Config struct {
 	Store *dirimpl.Settings `validate:"required"`
 
 	store gas.ConfigProvider
-	Env   gasenv.Environment
+	Env   config.Environment
 }
 
 const (
@@ -52,13 +50,13 @@ const (
 // this service is the one standing in for it.
 func LoadConfig() (*Config, error) {
 	return LoadConfigFrom(
-		providers.NewDotEnvProvider(
-			providers.WithDotEnvSeparator(envVarSeparator),
-			providers.WithDotEnvFileNotFoundPanic(false),
+		config.NewDotEnvProvider(
+			config.WithDotEnvSeparator(envVarSeparator),
+			config.WithDotEnvFileNotFoundPanic(false),
 		),
-		providers.NewEnvProvider(
-			providers.WithEnvSeparator(envVarSeparator),
-			providers.WithEnvPrefix(envVarPrefix),
+		config.NewEnvProvider(
+			config.WithEnvSeparator(envVarSeparator),
+			config.WithEnvPrefix(envVarPrefix),
 		),
 	)
 }
@@ -66,8 +64,8 @@ func LoadConfig() (*Config, error) {
 // LoadConfigFrom loads configuration from the given providers in order, then
 // applies the same defaults and binding as LoadConfig. Tests use it to inject
 // a provider of their own.
-func LoadConfigFrom(provs ...providers.Provider) (*Config, error) {
-	env := gasenv.NewExtension()
+func LoadConfigFrom(provs ...config.Provider) (*Config, error) {
+	env := config.NewEnvExtension()
 
 	opts := make([]config.Option, 0, len(provs)+1)
 	opts = append(opts, config.WithExtension(env))
@@ -85,8 +83,10 @@ func LoadConfigFrom(provs ...providers.Provider) (*Config, error) {
 	return bindConfig(store, env.Current())
 }
 
-func bindConfig(store gas.ConfigProvider, env gasenv.Environment) (*Config, error) {
-	applyDefaults(store)
+func bindConfig(store gas.ConfigProvider, env config.Environment) (*Config, error) {
+	if err := applyDefaults(store); err != nil {
+		return nil, err
+	}
 
 	cfg := Config{Env: env, store: store}
 	if err := store.Bind(&cfg); err != nil {
@@ -99,9 +99,16 @@ func bindConfig(store gas.ConfigProvider, env gasenv.Environment) (*Config, erro
 	return &cfg, nil
 }
 
-func applyDefaults(store gas.ConfigProvider) {
+func applyDefaults(store gas.ConfigProvider) error {
+	var errs []error
+	setDefault := func(key string, value any) {
+		if err := store.SetDefault(key, value); err != nil {
+			errs = append(errs, fmt.Errorf("config: default %s: %w", key, err))
+		}
+	}
+
 	// 9010 rather than the 9000 object-store uses, so both can run at once.
-	store.SetDefault("Server.Port", 9010)
+	setDefault("Server.Port", 9010)
 
 	// The server timeouts are set here rather than left to the gas defaults
 	// (5s read, 10s write), which are too short for this service's requests.
@@ -115,21 +122,38 @@ func applyDefaults(store gas.ConfigProvider) {
 	// IdleTimeout keeps the SDKs' connection reuse working between calls, and
 	// matches the gas default; it is set explicitly so it is visible here
 	// rather than inherited.
-	store.SetDefault("Server.ReadTimeout", "30s")
-	store.SetDefault("Server.WriteTimeout", "30s")
-	store.SetDefault("Server.IdleTimeout", "120s")
+	setDefault("Server.ReadTimeout", "30s")
+	setDefault("Server.WriteTimeout", "30s")
+	setDefault("Server.IdleTimeout", "120s")
+
+	// The headers get the same 30s as the whole request. Before gas v0.6.0 they
+	// were bounded by ReadTimeout, as net/http does when ReadHeaderTimeout
+	// is unset, but gas requires ReadHeaderTimeout to be positive, so it
+	// cannot be unlimited even when ReadTimeout is 0. Its gas default of 5s
+	// would cut a slow client's headers short of the budget above.
+	setDefault("Server.ReadHeaderTimeout", "30s")
 
 	// ShutdownTimeout is shorter than the gas default of 30s, which is a
 	// promise a container runtime does not keep: `docker stop` sends SIGTERM
 	// and kills the process 10s later. Every request here is a small file
-	// read or a single file rewrite, so 5s is far more than in-flight work
-	// needs, and it leaves the rest of that window for the services to close
-	// the storage root before the kill arrives.
-	store.SetDefault("Server.ShutdownTimeout", "5s")
+	// read or a single file rewrite, so in-flight work needs far less.
+	//
+	// It is not shorter than 7s because of a connection that was opened but
+	// never sent a request, as an SDK client's spare one is. net/http closes
+	// such a connection only once its whole-second timestamp is 6 seconds
+	// old, 5s to 6s after it opened, and checks at most every 500ms, so the
+	// shutdown can wait up to about 6.5s for it. With a shorter timeout gas
+	// reports the deadline as an error and the process exits 1. Gas's
+	// App.Stop returns within the timeout plus up to three 1s grace periods,
+	// which only run while requests are still in flight: 10s at the very
+	// worst, the edge of what docker gives.
+	setDefault("Server.ShutdownTimeout", "7s")
 
-	store.SetDefault("Store.RootDir", "./data")
+	setDefault("Store.RootDir", "./data")
 	// The region and account only appear in the ARNs the store mints; the
 	// defaults match what the AWS SDKs use against a local endpoint.
-	store.SetDefault("Store.Region", "us-east-1")
-	store.SetDefault("Store.AccountID", "000000000000")
+	setDefault("Store.Region", "us-east-1")
+	setDefault("Store.AccountID", "000000000000")
+
+	return errors.Join(errs...)
 }

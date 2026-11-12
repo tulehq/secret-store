@@ -54,17 +54,17 @@ func registerAppModules(app *gas.App) {
 }
 
 func installMiddleware(r *gas.Router, cfg *Config) {
-	r.UseMiddlewareFunc(httpx.RequestID(cfg.Env))
+	r.UseMiddlewareFunc(nil, httpx.RequestID(cfg.Env))
 
 	// No X-Forwarded-For handling: nothing is expected in front of this
 	// service, and the header is unsigned, so trusting a hop would only let a
 	// caller choose the client IP that ends up in the logs.
 
-	r.UseMiddlewareFunc(withRequestLogger)
+	r.UseMiddlewareFunc(nil, withRequestLogger)
 
-	r.UseMiddlewareFunc(gas.RequestLogger[httpx.RequestLogger]())
+	r.UseMiddlewareFunc(nil, gas.RequestLogger[httpx.RequestLogger]())
 
-	r.UseMiddlewareFunc(verifySignature(sigv4.NewVerifier(sigv4.Credentials{
+	r.UseMiddlewareFunc(nil, verifySignature(sigv4.NewVerifier(sigv4.Credentials{
 		AccessKeyID:     cfg.Auth.AccessKeyID,
 		SecretAccessKey: cfg.Auth.SecretAccessKey,
 	})))
@@ -73,7 +73,9 @@ func installMiddleware(r *gas.Router, cfg *Config) {
 	if cfg.HSTS != nil && cfg.HSTS.MaxAge > 0 {
 		hsts = fmt.Sprintf("max-age=%0.f", cfg.HSTS.MaxAge.Seconds())
 	}
-	r.UseMiddlewareFunc(gas.SecurityHeaders(
+	r.UseMiddlewareFunc(nil, gas.SecurityHeaders(
 		gas.WithSecurityHeadersStrictTransportSecurity(hsts),
 	))
+
+	installUnrouted(r)
 }
