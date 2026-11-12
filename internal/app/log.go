@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"tule.dev/secret-store/internal/httpx"
+	"tule.dev/secret-store/internal/smapi"
 	"tule.dev/secret-store/internal/util/buildinfo"
 )
 
@@ -58,15 +60,24 @@ func resolveRequestLogger(l gas.Logger) httpx.RequestLogger {
 	return l.With().Logger()
 }
 
-func withRequestLogger(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger, err := gas.ResolveFromRequestScope[httpx.RequestLogger](r)
-		if err != nil {
-			return
-		}
+// withRequestLogger puts the request-scoped logger on the request context.
+// When it cannot be resolved the request fails with the service's internal
+// error, logged through appLogger, since there is no request logger to log it
+// with.
+func withRequestLogger(appLogger gas.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			logger, err := gas.ResolveFromRequestScope[httpx.RequestLogger](r)
+			if err != nil {
+				ctx := gas.WithLogger(r.Context(), appLogger)
+				smapi.WriteHTTPError(w, r.WithContext(ctx),
+					fmt.Errorf("resolve the request logger: %w", err))
+				return
+			}
 
-		ctx := gas.WithLogger(r.Context(), logger)
+			ctx := gas.WithLogger(r.Context(), logger)
 
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
