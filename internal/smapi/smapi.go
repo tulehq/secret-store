@@ -32,15 +32,11 @@ const TargetHeader = "X-Amz-Target"
 const requestIDHeader = "X-Amzn-Requestid"
 
 // Operation returns the operation an X-Amz-Target header names, or "" when the
-// header is missing or does not name one of this service's operations. The
-// header may carry a "<target>.<operation>" pair or, from older clients, a
-// "<service>.<operation>" one, so only the last segment is taken.
+// header is not exactly the target prefix followed by a name. The dispatcher
+// then decides whether the name is an operation this service serves.
 func Operation(header string) string {
-	op := header
-	if _, rest, ok := strings.Cut(header, targetPrefix); ok {
-		op = rest
-	}
-	if op == "" || strings.ContainsAny(op, ".#") {
+	op, ok := strings.CutPrefix(header, targetPrefix)
+	if !ok {
 		return ""
 	}
 	return op
