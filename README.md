@@ -187,8 +187,19 @@ evaluation logic" describe:
   `ListSecrets` and `CreateSecret` act on the store's own account, which no
   resource policy covers, so another account's principal is denied them
   (`because no resource-based policy allows ...`).
-  `BatchGetSecretValue`'s own action is evaluated as the caller's own, and
-  then each secret with its own policy.
+  Another account must name a secret by its ARN, as Secrets Manager
+  requires ("To retrieve a secret from another account, you must use an
+  ARN."; GetSecretValue, API reference): a name is read in the caller's own
+  account, where the store holds no secret, so it is evaluated there as a
+  missing secret, without any resource policy, and answered
+  `ResourceNotFoundException` when the caller's identity policies allow it.
+  The store's secret of that name, its policy and its existence play no
+  part. This holds for every operation that takes a `SecretId`, and per
+  entry in `BatchGetSecretValue`.
+- **Cross-account `BatchGetSecretValue` is served** (this service's choice):
+  AWS's cross-account documentation does not list it, but it reaches
+  nothing `GetSecretValue` cannot. Its own action is evaluated as the
+  caller's own, and then each secret, named by ARN, with its own policy.
 - A session whose role was deleted is denied everything.
 - A stored policy that no longer parses fails every evaluated request on its
   secret with `InternalServiceError` (fail closed); the root key still
@@ -430,7 +441,11 @@ its `Condition` fixes, with values holding no wildcard or policy variable,
 one of `aws:PrincipalArn`, `aws:PrincipalAccount`, `aws:PrincipalOrgID`,
 `aws:userid` (`AROA...:*` counts as fixed), `aws:SourceArn`, `aws:SourceVpc`,
 `aws:SourceVpce`, `aws:SourceOwner`, `aws:SourceAccount`, or `aws:SourceIp`
-with ranges no broader than a `/8` (IPv4) or `/32` (IPv6). Only positive
+with ranges no broader than a `/8` (IPv4) or `/32` (IPv6). Locally that last
+rule is weak: every caller of a store on a developer's machine connects from
+loopback, so `"Principal": "*"` with `aws:SourceIp` `127.0.0.0/8` is not
+refused as public, yet it reaches every principal of every account (one of
+another account still needs its identity `Allow`). Only positive
 operators (`StringEquals`, `StringEqualsIgnoreCase`, `StringLike`,
 `ArnEquals`, `ArnLike`, `IpAddress`, plain or `ForAnyValue:`) fix a key;
 `...IfExists` and `ForAllValues:` do not. `ValidateResourcePolicy` reports
