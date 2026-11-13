@@ -204,27 +204,48 @@ func TestPutStoresTheBoundPolicyAndGetShowsIt(t *testing.T) {
 	}
 }
 
-func TestAPolicyNamingNoOneIsMalformed(t *testing.T) {
-	for _, op := range []string{"PutResourcePolicy", "ValidateResourcePolicy"} {
-		t.Run(op, func(t *testing.T) {
-			m, store, _, ctx := boundModule(t, rootPrincipal())
-			body := everyMember()
-			body["ResourcePolicy"] = grantTo(goneARN)
-			w := call(ctx, m, op, body)
-			if w.Code != http.StatusBadRequest ||
-				w.Header().Get("X-Amzn-Errortype") != smapi.TypeMalformedPolicy ||
-				!strings.Contains(w.Body.String(), invalidPrincipal) {
-				t.Fatalf("got %d %s %s", w.Code, w.Header(), w.Body.String())
-			}
-			if len(store.stored) != 0 {
-				t.Fatalf("stored %q", store.stored)
-			}
-		})
+func TestAPutNamingNoOneIsMalformed(t *testing.T) {
+	m, store, _, ctx := boundModule(t, rootPrincipal())
+	body := everyMember()
+	body["ResourcePolicy"] = grantTo(goneARN)
+	w := call(ctx, m, "PutResourcePolicy", body)
+	if w.Code != http.StatusBadRequest ||
+		w.Header().Get("X-Amzn-Errortype") != smapi.TypeMalformedPolicy ||
+		!strings.Contains(w.Body.String(), invalidPrincipal) {
+		t.Fatalf("got %d %s %s", w.Code, w.Header(), w.Body.String())
+	}
+	if len(store.stored) != 0 {
+		t.Fatalf("stored %q", store.stored)
+	}
+}
+
+// TestValidateDoesNotLookUpPrincipals checks ValidateResourcePolicy never
+// asks identity, with or without a SecretId: a policy naming no one passes,
+// and identity being down does not matter. Without a SecretId it is
+// evaluated in the caller's own account, so a lookup would tell a caller of
+// any account which principals exist.
+func TestValidateDoesNotLookUpPrincipals(t *testing.T) {
+	for _, withSecret := range []bool{false, true} {
+		m, _, fake, ctx := boundModule(t, rootPrincipal())
+		fake.fail = errors.New("identity is down")
+		body := map[string]any{"ResourcePolicy": grantTo(goneARN)}
+		if withSecret {
+			body["SecretId"] = "app/db"
+		}
+		w := call(ctx, m, "ValidateResourcePolicy", body)
+		var got smapi.ValidateResourcePolicyResponse
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil ||
+			!got.PolicyValidationPassed {
+			t.Fatalf("with secret %t: %d %s", withSecret, w.Code, w.Body.String())
+		}
+		if fake.binds != 0 || fake.shows != 0 {
+			t.Fatalf("with secret %t: binds %d, shows %d", withSecret, fake.binds, fake.shows)
+		}
 	}
 }
 
 func TestFailingToReachIdentityFailsTheCall(t *testing.T) {
-	for _, op := range []string{"PutResourcePolicy", "ValidateResourcePolicy", "GetResourcePolicy"} {
+	for _, op := range []string{"PutResourcePolicy", "GetResourcePolicy"} {
 		t.Run(op, func(t *testing.T) {
 			m, store, fake, ctx := boundModule(t, rootPrincipal())
 			fake.fail = errors.New("identity is down")
@@ -247,18 +268,14 @@ func TestADeniedCallerLearnsNothingOfPrincipals(t *testing.T) {
 		AccountID: "000000000000", ARN: devARN, PrincipalARN: devARN,
 		UserID: devID, Type: sigv4.PrincipalTypeUser,
 	}
-	for _, op := range []string{"PutResourcePolicy", "ValidateResourcePolicy"} {
-		t.Run(op, func(t *testing.T) {
-			m, _, fake, ctx := boundModule(t, dev)
-			body := everyMember()
-			body["ResourcePolicy"] = grantTo(goneARN)
-			w := call(ctx, m, op, body)
-			if w.Header().Get("X-Amzn-Errortype") != smapi.TypeAccessDenied {
-				t.Fatalf("got %d %s", w.Code, w.Body.String())
-			}
-			if fake.binds != 0 {
-				t.Fatalf("Bind was called %d times", fake.binds)
-			}
-		})
+	m, _, fake, ctx := boundModule(t, dev)
+	body := everyMember()
+	body["ResourcePolicy"] = grantTo(goneARN)
+	w := call(ctx, m, "PutResourcePolicy", body)
+	if w.Header().Get("X-Amzn-Errortype") != smapi.TypeAccessDenied {
+		t.Fatalf("got %d %s", w.Code, w.Body.String())
+	}
+	if fake.binds != 0 {
+		t.Fatalf("Bind was called %d times", fake.binds)
 	}
 }

@@ -163,10 +163,13 @@ func (m *Module) deleteResourcePolicy(ctx gas.Context) error {
 	})
 }
 
-// validateResourcePolicy checks a policy without storing it: its syntax and
-// its principals, a user or role ARN that no user or role has, answered
-// MalformedPolicyDocumentException as PutResourcePolicy answers them, and
-// broad access, answered in ValidationErrors. Secrets Manager also
+// validateResourcePolicy checks a policy without storing it: its syntax,
+// answered MalformedPolicyDocumentException as PutResourcePolicy answers it,
+// and broad access, answered in ValidationErrors. It does not check that the
+// users and roles the policy names exist, which AWS documents no check for:
+// without a SecretId it is evaluated in the caller's own account, so it
+// would let a caller of any account learn which principals exist. Only
+// PutResourcePolicy, which needs a grant on a secret, binds them. Secrets Manager also
 // "Verifies the policy does not lock out a caller", a check this service
 // does not make. With a SecretId the secret must exist and not be scheduled
 // for deletion, and the caller is checked on it, with its stored policy;
@@ -189,9 +192,6 @@ func (m *Module) validateResourcePolicy(ctx gas.Context) error {
 	}
 
 	if err = m.authorizeValidate(ctx, req.SecretID); err != nil {
-		return err
-	}
-	if _, err = m.bindPolicy(ctx, doc); err != nil {
 		return err
 	}
 
