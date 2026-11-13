@@ -88,11 +88,14 @@ treated as an unknown key or as a valid one, and the root key keeps working.
 Unset, the service runs on its own exactly as without identity: only the
 root key is accepted, and identity is never contacted.
 
-identity v0.4.0 or later is required: the service asks the signing-key
-endpoint (version 3) for each principal's policies and attributes (a
-session's role ARN with its path, the unique ID, the principal type and the
-tags), and an older identity, which cannot report them, fails every request
-signed with one of its keys with `InternalServiceError`.
+identity v0.5.0 or later is required: the service asks the signing-key
+endpoint (version 4) for each principal's policies and attributes (a
+session's role ARN with its path, the unique ID, the principal type, the
+tags and the organization keys), and an older identity, which cannot report
+them, fails every request signed with one of its keys with
+`InternalServiceError`. It also binds the resource policies the store saves
+through identity's principal-ID endpoint (see
+[Unique IDs in resource policies](#unique-ids-in-resource-policies)).
 
 ### IAM policies
 
@@ -141,6 +144,29 @@ policy` or `... because no resource-based policy allows the <action> action`
 kinds deny, the identity-based one is named. The resource in the message is the `SecretId` (or `Name`) as the
 request gave it, as Secrets Manager's own messages show it, or `*`; the
 policy is evaluated on the secret's full ARN.
+
+### Changes from v0.4.0
+
+- **identity v0.5.0 is required** (signing-key version 4 and the
+  principal-ID endpoint); an older identity fails every request signed with
+  its keys with `InternalServiceError`.
+- **Resource policies are bound to unique IDs** when identity is configured
+  (see [Unique IDs in resource policies](#unique-ids-in-resource-policies)).
+  A `PutResourcePolicy` or `ValidateResourcePolicy` naming a user or role
+  ARN that no user or role has, which v0.4.0 accepted, is now refused with
+  `MalformedPolicyDocumentException`, and a user or role deleted and created
+  again under the same ARN no longer inherits what the policy granted.
+  `GetResourcePolicy` shows a deleted principal by its unique ID.
+- **Policies stored by v0.4.0 are not bound.** They name users and roles by
+  ARN and keep matching by ARN, so a user or role created again under such an
+  ARN is granted what the deleted one was, until the policy is saved again
+  with `PutResourcePolicy`. Nothing binds them on its own. To bind every
+  stored policy, read each with `GetResourcePolicy` and put it back.
+- **`aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` are supplied.** A
+  condition on them is now decided on the principal's organization, where
+  v0.4.0 always evaluated them as absent: a positive condition on them can
+  now hold, and a `Deny` with a negated operator on them no longer denies
+  every evaluated principal.
 
 ### Changes from v0.3.0
 
@@ -205,6 +231,42 @@ evaluation logic" describe:
   secret with `InternalServiceError` (fail closed); the root key still
   reaches the secret, and can replace or delete the policy.
 
+#### Unique IDs in resource policies
+
+With `TULE_Auth_IdentityEndpoint` set, a policy is bound as AWS binds it when
+it is saved: each IAM user or role ARN in its `Principal` (and
+`NotPrincipal`) is replaced by that user's or role's unique ID (`AIDA...`,
+`AROA...`), through identity's principal-ID endpoint, so a user or role
+deleted and created again under the same ARN is another principal, which the
+policy does not name ("The new role has a new principal ID that does not
+match the ID stored in the policy"; IAM User Guide, AWS JSON policy
+elements: Principal). The bound policy is what is stored and evaluated;
+evaluation never asks identity. `GetResourcePolicy` shows it as AWS does: an
+ID whose user or role still exists as that principal's current ARN, and one
+whose principal is gone as the ID. The document is otherwise kept as it was
+written; where an ID replaces an ARN, the white space of the object it is in
+is not kept.
+
+- Account IDs, root ARNs, assumed-role session ARNs, `"*"`, service
+  principals and ARNs in conditions, such as `aws:PrincipalArn`, are not
+  bound, as AWS does not convert them.
+- A user or role ARN that no user or role has is refused with
+  `MalformedPolicyDocumentException`, `Invalid principal in policy`, by
+  `PutResourcePolicy` and by `ValidateResourcePolicy`, and nothing is
+  stored. Secrets Manager documents the exception ("The resource policy has
+  syntax errors.") but not this message, which is the one IAM and S3 give.
+  The principals are looked up only once the request is allowed, so a caller
+  not allowed the action learns nothing of which users and roles exist.
+- Failing to reach identity fails the call with `InternalServiceError`,
+  logged: a write is never stored unbound, and a read never shows the stored
+  IDs in place of the ARNs. Only these three operations ask the
+  principal-ID endpoint.
+- Without `TULE_Auth_IdentityEndpoint` there are no unique IDs: a policy is
+  stored and returned as it was sent, matched by ARN, and a user ARN is not
+  checked, so a user or role created again under an ARN inherits its grant.
+- A policy stored by v0.4.0 or earlier is not bound until it is saved again
+  (see [Changes from v0.4.0](#changes-from-v040)).
+
 A secret scheduled for deletion keeps its policy: its `DescribeSecret` and
 `RestoreSecret` are evaluated with it, a restored secret has it again, and
 only a purge (`ForceDeleteWithoutRecovery`) removes it, with the secret.
@@ -261,7 +323,11 @@ connection's peer address), `aws:CurrentTime`, `aws:EpochTime`,
 service's region, never the region the request was signed for, which any
 caller may choose since the signature's region is not checked),
 `aws:PrincipalTag/<key>` for each of the principal's tags (a user's own, or
-a session's role's; identity issues no session tags), and, from the
+a session's role's; identity issues no session tags),
+`aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` (the organization of the
+principal's account and its one path, `o-.../r-.../ou-.../`, as identity
+reports them for an account that is a member or the management account of
+the organization; neither for any other account), and, from the
 principal identity reports, `aws:PrincipalAccount`, `aws:PrincipalArn` (a
 user's ARN, or for a role session its role's ARN with its path),
 `aws:userid`, `aws:PrincipalType` and, for a user, `aws:username`. With an
@@ -290,6 +356,15 @@ characters or a `Name` longer than 512, the API reference's limits, is
 refused with `ValidationException` before anything is evaluated, from any
 caller.
 
+When identity reports that it could not ask the accounts service for a
+principal's organization, `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths`
+are evaluated as unknown, never as absent (tule.dev/policy's unknown context
+keys): a condition on them never holds in an `Allow` and always holds in a
+`Deny`, whatever its operator, so neither a negated grant nor a "deny anyone
+outside my organization" fails open. Identity keeps an account's
+organization keys for up to 30 seconds, so an account removed or moved keeps
+its old keys that long.
+
 Parsed policy documents are cached by content hash, up to 1024 identity
 policies and 1024 resource policies. The
 policies themselves are fetched from identity on every request, so a policy
@@ -298,17 +373,14 @@ fails the request with `InternalServiceError`.
 
 What is not enforced:
 
-- **Unique IDs in stored resource policies.** AWS converts a user or role
-  ARN in a resource policy to the principal's unique ID when it is stored,
-  so a principal recreated under the same name does not inherit the grant.
-  Here principals are matched by ARN: a recreated user or role does inherit
-  it, until identity can resolve unique IDs for the services.
-- **`aws:PrincipalOrgID` and `aws:PrincipalOrgPaths`** are not supplied
-  (identity does not carry the organization). A positive condition on them
-  (`StringEquals` and the like) never holds, and a negated one
-  (`StringNotEquals` and the like) always does, so a `Deny` written with a
-  negated operator on them, such as "deny anyone outside my organization",
-  denies every evaluated principal.
+- **Unbound policies** in two cases: without identity, and those stored by
+  v0.4.0 or earlier until they are saved again (see
+  [Unique IDs in resource policies](#unique-ids-in-resource-policies)).
+  Their user and role principals are matched by ARN.
+- **A policy naming a unique ID** (`AIDA...`, `AROA...`), as
+  `GetResourcePolicy` shows a deleted principal, is stored as it is, and
+  matches no one once its principal is gone; whether AWS accepts such a
+  policy on `PutResourcePolicy` is not verified.
 - **Service principals** in a resource policy never match: no caller here is
   an AWS service.
 - **`secretsmanager:KmsKeyArn`, `secretsmanager:Type`,
@@ -412,7 +484,7 @@ curl -fsS --aws-sigv4 aws:amz:us-east-1:secretsmanager --user test:test \
 | `PutResourcePolicy` | Attaches the secret's one policy, `default`, replacing any; see below |
 | `GetResourcePolicy` | Without a policy, answers the secret's `ARN` and `Name` only |
 | `DeleteResourcePolicy` | Succeeds whether or not the secret has a policy |
-| `ValidateResourcePolicy` | Checks syntax and broad access without storing; `SecretId` optional |
+| `ValidateResourcePolicy` | Checks syntax, principals and broad access without storing; `SecretId` optional |
 
 The resource-policy operations follow the API reference: a `ResourcePolicy`
 of 1 to 20,480 characters (the "Resource-based policy length" quota counts
@@ -430,7 +502,10 @@ with the parser's message, and is never stored. Secrets Manager documents no
 `Sid` rule of its own, so any `Sid` string unique in the policy is accepted,
 as `ParseResource` accepts it. Length, name and syntax are checked before the
 request is evaluated, so a caller not allowed the action still learns that
-its document is malformed; AWS does not document the order.
+its document is malformed; AWS does not document the order. With identity, a user
+or role ARN no user or role has is `MalformedPolicyDocumentException` too,
+checked only after the request is allowed (see
+[Unique IDs in resource policies](#unique-ids-in-resource-policies)).
 
 With `BlockPublicPolicy` set, a policy that grants broad access is refused
 with `PublicPolicyException`. AWS decides this with Zelkova and documents no
