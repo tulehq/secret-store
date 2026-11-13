@@ -10,14 +10,21 @@ import (
 	"tule.dev/secret-store/internal/smapi"
 )
 
-// authorizeAll checks op's own action, on "*", for an operation the reference
-// gives no resource type.
-func (m *Module) authorizeAll(ctx context.Context, op string) error {
+// authorizeAll checks action, one of op's checks, on "*", for an action the
+// reference gives no resource type, or one made on no secret. No resource
+// policy applies. ListSecrets lists the store's own secrets, so it is checked
+// as on the store's account, which a principal of another account needs a
+// resource policy for and cannot have. callersAccount checks it instead as on
+// the caller's own account, for an action that reads nothing of the store's
+// by itself: BatchGetSecretValue's own action, whose secrets are each checked
+// with their own policy, and ValidateResourcePolicy without a secret.
+func (m *Module) authorizeAll(ctx context.Context, op, action string, callersAccount bool) error {
 	return m.authz.Check(ctx, authz.Request{
-		Operation: op,
-		Action:    authz.Operations[op][0].Action,
-		Resource:  "*",
-		Shown:     "*",
+		Operation:      op,
+		Action:         action,
+		Resource:       "*",
+		Shown:          "*",
+		CallersAccount: callersAccount,
 	})
 }
 
@@ -55,33 +62,69 @@ func (m *Module) guard(
 		return contracts.Unchecked(ctx)
 	}
 	return contracts.WithCheck(ctx, func(found *contracts.SecretDetail) error {
-		arn, tags, err := m.secretFacts(secretID, found)
-		if err != nil {
-			return err
-		}
-		all := m.authz.SecretKeys(arn, tags)
-		for k, v := range keys {
-			all[k] = v
-		}
-		err = m.authz.Check(ctx, authz.Request{
-			Operation: op,
-			Action:    action,
-			Resource:  arn,
-			Shown:     secretID,
-			Keys:      all,
-		})
-		if err != nil {
+		if err := m.checkSecret(ctx, op, action, secretID, keys, found); err != nil {
 			return err
 		}
 		// Only an allowed caller learns what the further checks say of the
 		// secret, such as which tag keys it holds.
 		for _, c := range also {
-			if err = c(found); err != nil {
+			if err := c(found); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+// guardActions is guard for an operation authorized as several actions on
+// one secret, each checked in turn on the secret the store resolves.
+func (m *Module) guardActions(
+	ctx context.Context,
+	op, secretID string,
+	actions ...string,
+) context.Context {
+	if authz.IsRoot(ctx) {
+		return contracts.Unchecked(ctx)
+	}
+	return contracts.WithCheck(ctx, func(found *contracts.SecretDetail) error {
+		for _, action := range actions {
+			if err := m.checkSecret(ctx, op, action, secretID, nil, found); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// checkSecret checks action on found, the secret the store resolved secretID
+// to, or nil when there is none, with the secret's own keys and keys, and
+// with the resource policy stored in the same record: the policy evaluated is
+// the one of the secret acted on, read under the same lock.
+func (m *Module) checkSecret(
+	ctx context.Context,
+	op, action, secretID string,
+	keys map[string][]string,
+	found *contracts.SecretDetail,
+) error {
+	arn, tags, err := m.secretFacts(secretID, found)
+	if err != nil {
+		return err
+	}
+	all := m.authz.SecretKeys(arn, tags)
+	for k, v := range keys {
+		all[k] = v
+	}
+	req := authz.Request{
+		Operation: op,
+		Action:    action,
+		Resource:  arn,
+		Shown:     secretID,
+		Keys:      all,
+	}
+	if found != nil {
+		req.Policy = found.ResourcePolicy
+	}
+	return m.authz.Check(ctx, req)
 }
 
 // secretFacts returns the ARN and tags of detail, the secret the store

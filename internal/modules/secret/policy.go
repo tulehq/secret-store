@@ -1,0 +1,282 @@
+package secret
+
+import (
+	"fmt"
+	"strconv"
+	"unicode/utf8"
+
+	"github.com/gasmod/gas"
+
+	"tule.dev/secret-store/internal/authz"
+	"tule.dev/secret-store/internal/smapi"
+)
+
+// The resource-policy operations, as the Secrets Manager API reference gives
+// them (PutResourcePolicy, GetResourcePolicy, DeleteResourcePolicy,
+// ValidateResourcePolicy).
+const (
+	// maxPolicyLen is ResourcePolicy's "Maximum length of 20480", the
+	// "Resource-based policy length" quota: "The maximum number of
+	// characters in a resource-based permissions policy attached to a
+	// secret." It counts characters, not bytes.
+	maxPolicyLen = 20480
+	// defaultPolicyName is the one policy a secret has: "If you don't
+	// specify this field, Secrets Manager uses default. You can only attach
+	// the default policy".
+	defaultPolicyName = "default"
+	// maxPolicyNameLen and policyNamePattern are PolicyName's constraints.
+	maxPolicyNameLen  = 64
+	policyNamePattern = `[0-9A-Za-z\-\_]+`
+	// broadAccessCheck names ValidateResourcePolicy's broad-access check in
+	// ValidationErrors. AWS does not document its check names; this one is
+	// the service's own.
+	broadAccessCheck = "BROAD_ACCESS"
+)
+
+func (m *Module) putResourcePolicy(ctx gas.Context) error {
+	req, err := decode[smapi.PutResourcePolicyRequest](ctx)
+	if err != nil {
+		return err
+	}
+	if err = requireSecretID(req.SecretID); err != nil {
+		return err
+	}
+	if err = checkPolicyName(req.PolicyName, false); err != nil {
+		return err
+	}
+	doc, err := m.requirePolicy(req.ResourcePolicy)
+	if err != nil {
+		return err
+	}
+	if req.BlockPublicPolicy != nil && *req.BlockPublicPolicy {
+		if err = blockPublic(doc); err != nil {
+			return err
+		}
+	}
+
+	sctx := m.guardSecret(ctx, "PutResourcePolicy", req.SecretID, putKeys(req))
+	out, err := m.secrets.PutResourcePolicy(sctx, req.SecretID, doc)
+	if err != nil {
+		return err
+	}
+	return smapi.Write(ctx, smapi.ResourcePolicyResponse{
+		SecretRefResponse: secretRef(*out),
+		PolicyName:        defaultPolicyName,
+	})
+}
+
+// putKeys returns PutResourcePolicy's own keys: secretsmanager:PolicyName
+// and secretsmanager:BlockPublicPolicy, each when the request gives it.
+func putKeys(req smapi.PutResourcePolicyRequest) map[string][]string {
+	keys := optional(nil, "secretsmanager:PolicyName", deref(req.PolicyName))
+	if req.BlockPublicPolicy != nil {
+		keys = optional(keys, "secretsmanager:BlockPublicPolicy",
+			strconv.FormatBool(*req.BlockPublicPolicy))
+	}
+	return keys
+}
+
+// blockPublic refuses doc with PublicPolicyException when it grants broad
+// access. AWS does not document the exception's message; this one is the
+// service's own.
+func blockPublic(doc string) error {
+	why, broad, err := broadAccess(doc)
+	if err != nil {
+		return err
+	}
+	if broad {
+		return smapi.ErrPublicPolicy("BlockPublicPolicy is set and the resource policy " +
+			"grants broad access to the secret. " + why)
+	}
+	return nil
+}
+
+func (m *Module) getResourcePolicy(ctx gas.Context) error {
+	req, err := decode[smapi.ResourcePolicyRequest](ctx)
+	if err != nil {
+		return err
+	}
+	if err = requireSecretID(req.SecretID); err != nil {
+		return err
+	}
+	if err = checkPolicyName(req.PolicyName, true); err != nil {
+		return err
+	}
+	keys := optional(nil, "secretsmanager:PolicyName", deref(req.PolicyName))
+	sctx := m.guardSecret(ctx, "GetResourcePolicy", req.SecretID, keys)
+	out, err := m.secrets.GetResourcePolicy(sctx, req.SecretID)
+	if err != nil {
+		return err
+	}
+	res := smapi.ResourcePolicyResponse{SecretRefResponse: secretRef(out.SecretRef)}
+	if out.Policy != "" {
+		res.PolicyName = defaultPolicyName
+		res.ResourcePolicy = out.Policy
+	}
+	return smapi.Write(ctx, res)
+}
+
+func (m *Module) deleteResourcePolicy(ctx gas.Context) error {
+	req, err := decode[smapi.ResourcePolicyRequest](ctx)
+	if err != nil {
+		return err
+	}
+	if err = requireSecretID(req.SecretID); err != nil {
+		return err
+	}
+	if err = checkPolicyName(req.PolicyName, false); err != nil {
+		return err
+	}
+	keys := optional(nil, "secretsmanager:PolicyName", deref(req.PolicyName))
+	sctx := m.guardSecret(ctx, "DeleteResourcePolicy", req.SecretID, keys)
+	out, err := m.secrets.DeleteResourcePolicy(sctx, req.SecretID)
+	if err != nil {
+		return err
+	}
+	return smapi.Write(ctx, smapi.ResourcePolicyResponse{
+		SecretRefResponse: secretRef(*out),
+		PolicyName:        defaultPolicyName,
+	})
+}
+
+// validateResourcePolicy checks a policy without storing it: its syntax,
+// answered MalformedPolicyDocumentException as PutResourcePolicy answers it,
+// and broad access, answered in ValidationErrors. Secrets Manager also
+// "Verifies the policy does not lock out a caller", a check this service
+// does not make. With a SecretId the secret must exist and not be scheduled
+// for deletion, and the caller is checked on it, with its stored policy;
+// without one, on "*".
+func (m *Module) validateResourcePolicy(ctx gas.Context) error {
+	req, err := decode[smapi.ValidateResourcePolicyRequest](ctx)
+	if err != nil {
+		return err
+	}
+	if err = optionalSecretID(req.SecretID); err != nil {
+		return err
+	}
+	doc, err := m.requirePolicy(req.ResourcePolicy)
+	if err != nil {
+		return err
+	}
+	why, broad, err := broadAccess(doc)
+	if err != nil {
+		return err
+	}
+
+	if err = m.authorizeValidate(ctx, req.SecretID); err != nil {
+		return err
+	}
+
+	res := smapi.ValidateResourcePolicyResponse{
+		PolicyValidationPassed: !broad,
+		ValidationErrors:       []smapi.ValidationErrorsEntry{},
+	}
+	if broad {
+		res.ValidationErrors = append(res.ValidationErrors, smapi.ValidationErrorsEntry{
+			CheckName:    broadAccessCheck,
+			ErrorMessage: "The resource policy grants broad access to the secret. " + why,
+		})
+	}
+	return smapi.Write(ctx, res)
+}
+
+// optionalSecretID refuses a SecretId that is given but empty or longer than
+// the API allows.
+func optionalSecretID(secretID *string) error {
+	switch {
+	case secretID == nil:
+		return nil
+	case *secretID == "":
+		return smapi.ErrTooShort("secretId", "", 1)
+	default:
+		return requireSecretID(*secretID)
+	}
+}
+
+// authorizeValidate checks ValidateResourcePolicy's two actions on the
+// secret secretID names, which must exist and not be scheduled for
+// deletion, or on "*" without one.
+func (m *Module) authorizeValidate(ctx gas.Context, secretID *string) error {
+	const op = "ValidateResourcePolicy"
+	actions := []string{"secretsmanager:ValidateResourcePolicy", "secretsmanager:PutResourcePolicy"}
+	if secretID == nil {
+		for _, action := range actions {
+			if err := m.authorizeAll(ctx, op, action, true); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	sctx := m.guardActions(ctx, op, *secretID, actions...)
+	_, err := m.secrets.GetResourcePolicy(sctx, *secretID)
+	return err
+}
+
+// requirePolicy returns the ResourcePolicy a request gave, refusing one that
+// is missing, empty, longer than maxPolicyLen characters, or that does not
+// parse as a resource-based policy. The length is checked first, so nothing
+// longer than the API allows is parsed.
+func (m *Module) requirePolicy(doc *string) (string, error) {
+	switch {
+	case doc == nil:
+		return "", smapi.ErrInvalidParameter("ResourcePolicy is required.")
+	case *doc == "":
+		return "", smapi.ErrTooShort("resourcePolicy", "", 1)
+	case utf8.RuneCountInString(*doc) > maxPolicyLen:
+		return "", smapi.ErrTooLong("resourcePolicy", *doc, maxPolicyLen)
+	}
+	if err := m.authz.ParseResourcePolicy(*doc); err != nil {
+		return "", err
+	}
+	return *doc, nil
+}
+
+// checkPolicyName refuses a PolicyName that breaks the model's constraints,
+// with ValidationException, or that is not "default": PutResourcePolicy and
+// DeleteResourcePolicy answer that InvalidParameterException, and
+// GetResourcePolicy, with get set, ResourceNotFoundException ("If you
+// specify a name other than default and no policy with that name exists").
+// An absent name is "default".
+func checkPolicyName(name *string, get bool) error {
+	if name == nil {
+		return nil
+	}
+	switch n := *name; {
+	case n == "":
+		return smapi.ErrTooShort("policyName", n, 1)
+	case len(n) > maxPolicyNameLen:
+		return smapi.ErrTooLong("policyName", n, maxPolicyNameLen)
+	case !validPolicyName(n):
+		return smapi.ErrPattern("policyName", n, policyNamePattern)
+	case n == defaultPolicyName:
+		return nil
+	case get:
+		return smapi.ErrResourceNotFound(
+			"Secrets Manager can't find the specified resource policy.",
+		)
+	default:
+		return smapi.ErrInvalidParameter(
+			"You can only attach the default policy; PolicyName must be default.")
+	}
+}
+
+// validPolicyName reports whether n matches policyNamePattern.
+func validPolicyName(n string) bool {
+	for _, r := range n {
+		ok := r == '-' || r == '_' ||
+			('0' <= r && r <= '9') || ('A' <= r && r <= 'Z') || ('a' <= r && r <= 'z')
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// broadAccess is authz.BroadAccess for a request's policy.
+func broadAccess(doc string) (string, bool, error) {
+	why, broad, err := authz.BroadAccess([]byte(doc))
+	if err != nil {
+		return "", false, fmt.Errorf("check the resource policy for broad access: %w", err)
+	}
+	return why, broad, nil
+}

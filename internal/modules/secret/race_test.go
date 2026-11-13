@@ -112,6 +112,28 @@ func TestASecretSwappedBeforeTheStoreActsIsTheOneChecked(t *testing.T) {
 	requireAccessDenied(t, err)
 }
 
+func TestAResourcePolicyAttachedBeforeTheStoreActsIsTheOneEvaluated(t *testing.T) {
+	store, m, ctx := newSwapper(t)
+	put(t, store.Service, contracts.CreateSecretInput{Name: "app/db"})
+
+	// Between the check being built and the store acting, a Deny is
+	// attached to app/db. The policy evaluated is the one stored with the
+	// secret acted on, read under the same lock.
+	store.mutate = func() {
+		_, err := store.PutResourcePolicy(contracts.Unchecked(context.Background()), "app/db",
+			`{"Version":"2012-10-17","Statement":{"Effect":"Deny","Principal":"*",`+
+				`"Action":"secretsmanager:GetSecretValue","Resource":"*"}}`)
+		if err != nil {
+			t.Fatalf("put the resource policy: %v", err)
+		}
+	}
+	out, err := read(ctx, m, "app/db")
+	if err == nil {
+		t.Fatalf("read %s past a resource-based Deny", *out.Payload.String)
+	}
+	requireAccessDenied(t, err)
+}
+
 func TestADecoyDeletedBeforeTheStoreActsDoesNotUnlockTheVictim(t *testing.T) {
 	// The reviewer's case: the victim, tagged env=prod, and an untagged
 	// decoy named after the victim's ARN segment; the read names the

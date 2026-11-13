@@ -54,37 +54,37 @@ func (m *Module) routes() map[string]handler {
 	return map[string]handler{
 		"BatchGetSecretValue":      m.batchGetSecretValue,
 		"CreateSecret":             m.createSecret,
+		"DeleteResourcePolicy":     m.deleteResourcePolicy,
 		"DeleteSecret":             m.deleteSecret,
 		"DescribeSecret":           m.describeSecret,
+		"GetResourcePolicy":        m.getResourcePolicy,
 		"GetSecretValue":           m.getSecretValue,
 		"ListSecretVersionIds":     m.listSecretVersionIDs,
 		"ListSecrets":              m.listSecrets,
+		"PutResourcePolicy":        m.putResourcePolicy,
 		"PutSecretValue":           m.putSecretValue,
 		"RestoreSecret":            m.restoreSecret,
 		"TagResource":              m.tagResource,
 		"UntagResource":            m.untagResource,
 		"UpdateSecret":             m.updateSecret,
 		"UpdateSecretVersionStage": m.updateSecretVersionStage,
+		"ValidateResourcePolicy":   m.validateResourcePolicy,
 	}
 }
 
 // unserved are the Secrets Manager operations this service knows of and
 // answers with 501, whoever calls, without evaluating any policy. Most of
 // them need something a local stand-in has no business faking -- KMS, Lambda
-// rotation, resource-based policy evaluation or cross-region replication --
+// rotation or cross-region replication --
 // and GetRandomPassword is left out because standing in for Secrets Manager
 // does not require inventing passwords.
 var unserved = []string{
 	"CancelRotateSecret",
-	"DeleteResourcePolicy",
 	"GetRandomPassword",
-	"GetResourcePolicy",
-	"PutResourcePolicy",
 	"RemoveRegionsFromReplication",
 	"ReplicateSecretToRegions",
 	"RotateSecret",
 	"StopReplicationToReplica",
-	"ValidateResourcePolicy",
 }
 
 // Name identifies the module to gas.
