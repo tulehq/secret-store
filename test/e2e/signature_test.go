@@ -170,7 +170,7 @@ func TestASignedHeadersListMustBeCanonical(t *testing.T) {
 			req, body := rawRequest(t, srv)
 			signRaw(t, req, body, list)
 			status, errType = sendRaw(t, srv, req)
-			requireEqual(t, status, http.StatusForbidden, "status")
+			requireEqual(t, status, http.StatusBadRequest, "status")
 			requireEqual(t, errType, "IncompleteSignatureException", "error type")
 		})
 	}
@@ -208,7 +208,7 @@ func TestALargeRepeatedSignedHeadersListIsRefusedCheaply(t *testing.T) {
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("the request took %s, want under 500ms", elapsed)
 	}
-	requireEqual(t, status, http.StatusForbidden, "status")
+	requireEqual(t, status, http.StatusBadRequest, "status")
 	requireEqual(t, errType, "IncompleteSignatureException", "error type")
 }
 
@@ -245,7 +245,7 @@ func TestARequiredHeaderListedNonCanonicallyStaysBound(t *testing.T) {
 			signRaw(t, req, body, tt.signedHeaders)
 			tt.tamper(req)
 			status, errType := sendRaw(t, srv, req)
-			requireEqual(t, status, http.StatusForbidden, "status")
+			requireEqual(t, status, http.StatusBadRequest, "status")
 			requireEqual(t, errType, "IncompleteSignatureException", "error type")
 
 			// Nothing was done in the request's name.

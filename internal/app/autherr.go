@@ -21,7 +21,9 @@ func signatureError(e *sigv4.Error) error {
 	case sigv4.KindUnsupportedAlgorithm, sigv4.KindIncompleteAuth, sigv4.KindInvalidDate,
 		sigv4.KindUnsignedHeader, sigv4.KindMalformedCredential,
 		sigv4.KindCredentialDateMismatch, sigv4.KindPayloadHashNotAccepted:
-		return smapi.NewError(http.StatusForbidden, smapi.TypeIncompleteSig, e.Message)
+		// The Secrets Manager common errors give IncompleteSignature as a 400,
+		// unlike the other authentication errors.
+		return smapi.NewError(http.StatusBadRequest, smapi.TypeIncompleteSig, e.Message)
 	case sigv4.KindRequestTimeTooSkewed, sigv4.KindSignatureMismatch, sigv4.KindWrongService:
 		return smapi.NewError(http.StatusForbidden, smapi.TypeInvalidSignature, e.Message)
 	case sigv4.KindUnknownAccessKey, sigv4.KindInvalidSessionToken:
