@@ -37,8 +37,13 @@ func New(cfg *Config, extra ...gas.Option) (*gas.App, error) {
 
 	az := authz.New(cfg.Store.Region, cfg.Store.AccountID)
 
+	pp, pErr := newPolicyPrincipals(cfg.Auth)
+	if pErr != nil {
+		return nil, pErr
+	}
+
 	registerInfraServices(app, cfg, logger)
-	registerAppServices(app, cfg, az)
+	registerAppServices(app, cfg, az, pp)
 	registerAppModules(app)
 	installMiddleware(app.Router(), cfg, logger, verifier, az)
 	app.ReadyFunc(seedSecrets(cfg.Store.Seed))
@@ -52,9 +57,15 @@ func registerInfraServices(app *gas.App, cfg *Config, logger gas.Logger) {
 	app.RegisterScopedService[httpx.RequestLogger](resolveRequestLogger)
 }
 
-func registerAppServices(app *gas.App, cfg *Config, az *authz.Authorizer) {
+func registerAppServices(
+	app *gas.App,
+	cfg *Config,
+	az *authz.Authorizer,
+	pp contracts.PolicyPrincipals,
+) {
 	app.RegisterSingletonService[contracts.SecretsProvider](dirimpl.NewService(cfg.Store))
 	app.RegisterServiceInstance[*authz.Authorizer](az)
+	app.RegisterServiceInstance[contracts.PolicyPrincipals](pp)
 }
 
 func registerAppModules(app *gas.App) {

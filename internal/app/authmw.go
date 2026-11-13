@@ -6,9 +6,11 @@ import (
 	"time"
 
 	"tule.dev/identity/keysource"
+	"tule.dev/identity/principals"
 	"tule.dev/sigv4"
 
 	"tule.dev/secret-store/internal/authz"
+	"tule.dev/secret-store/internal/contracts"
 	"tule.dev/secret-store/internal/modules/health"
 	"tule.dev/secret-store/internal/smapi"
 )
@@ -64,6 +66,27 @@ func newKeySource(auth *authSettings, accountID string) (sigv4.KeySource, error)
 		return nil, fmt.Errorf("identity key source: %w", err)
 	}
 	return sigv4.Chain(static, identity), nil
+}
+
+// newPolicyPrincipals returns what binds the principals of the resource
+// policies the store saves: identity's principal-ID endpoint when an
+// identity endpoint is configured, its calls signed with the configured key,
+// identity's root key, and bounded like the signing-key calls; otherwise
+// contracts.UnboundPrincipals, which stores policies as they were sent.
+func newPolicyPrincipals(auth *authSettings) (contracts.PolicyPrincipals, error) {
+	if auth.IdentityEndpoint == "" {
+		return contracts.UnboundPrincipals{}, nil
+	}
+	c, err := principals.New(principals.Config{
+		HTTPClient:      &http.Client{Timeout: identityTimeout},
+		Endpoint:        auth.IdentityEndpoint,
+		AccessKeyID:     auth.AccessKeyID,
+		SecretAccessKey: auth.SecretAccessKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("identity principals client: %w", err)
+	}
+	return c, nil
 }
 
 // verifierFor returns the SigV4 verifier over keys.

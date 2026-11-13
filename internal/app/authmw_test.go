@@ -13,8 +13,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"tule.dev/identity/principals"
 	"tule.dev/sigv4"
 
+	"tule.dev/secret-store/internal/contracts"
 	"tule.dev/secret-store/internal/smapi"
 )
 
@@ -178,5 +180,24 @@ func TestAHungIdentityFailsClosed(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("the lookup took %v, want about the 100ms timeout", elapsed)
+	}
+}
+
+func TestPoliciesAreBoundOnlyWithIdentity(t *testing.T) {
+	pp, err := newPolicyPrincipals(&authSettings{AccessKeyID: "test", SecretAccessKey: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pp.(contracts.UnboundPrincipals); !ok {
+		t.Fatalf("standalone: got %T", pp)
+	}
+	pp, err = newPolicyPrincipals(&authSettings{
+		AccessKeyID: "test", SecretAccessKey: "test", IdentityEndpoint: "http://localhost:9030",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pp.(*principals.Client); !ok {
+		t.Fatalf("with identity: got %T", pp)
 	}
 }

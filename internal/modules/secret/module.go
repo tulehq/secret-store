@@ -19,11 +19,15 @@ const moduleName = "tule/modules/secret"
 
 // Module registers the API route and serves the operations behind it.
 type Module struct {
-	router   *gas.Router
-	logger   gas.Logger
-	secrets  contracts.SecretsProvider
-	authz    *authz.Authorizer
-	handlers map[string]handler
+	router  *gas.Router
+	logger  gas.Logger
+	secrets contracts.SecretsProvider
+	authz   *authz.Authorizer
+	// principals binds the principals of a resource policy on save and
+	// shows a stored one: identity's principals client, or
+	// contracts.UnboundPrincipals without identity.
+	principals contracts.PolicyPrincipals
+	handlers   map[string]handler
 }
 
 // handler serves one operation. Returning an error leaves the response to the
@@ -31,18 +35,21 @@ type Module struct {
 type handler func(gas.Context) error
 
 // NewModule returns a Module serving from secrets, each request authorized by
-// az. It registers its route when the app initializes it.
+// az, the resource policies it stores bound and shown by principals. It
+// registers its route when the app initializes it.
 func NewModule(
 	router *gas.Router,
 	logger gas.Logger,
 	secrets contracts.SecretsProvider,
 	az *authz.Authorizer,
+	principals contracts.PolicyPrincipals,
 ) *Module {
 	m := &Module{
-		router:  router,
-		logger:  logger.With().Str("module", moduleName).Logger(),
-		secrets: secrets,
-		authz:   az,
+		router:     router,
+		logger:     logger.With().Str("module", moduleName).Logger(),
+		secrets:    secrets,
+		authz:      az,
+		principals: principals,
 	}
 	m.handlers = m.routes()
 	return m
