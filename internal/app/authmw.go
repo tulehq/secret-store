@@ -19,8 +19,8 @@ const maxRequestBody = 1 << 20
 
 // identityTimeout bounds one call to identity's signing-key endpoint, so a
 // hung identity fails the request it was verifying, as InternalServiceError,
-// rather than holding it open.
-const identityTimeout = 10 * time.Second
+// rather than holding it open. It is a variable so a test can shorten it.
+var identityTimeout = 10 * time.Second
 
 // newVerifier returns the SigV4 verifier for the configured access key and,
 // when an identity endpoint is configured, every key identity issued.
