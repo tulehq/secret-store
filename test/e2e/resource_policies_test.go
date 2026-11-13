@@ -257,31 +257,39 @@ func TestACrossAccountUserNeedsTheResourcePolicyToo(t *testing.T) {
 	f.putPartnerPolicy(t, allowDoc([]string{"secretsmanager:*"}, "*"))
 	putPolicy(t, f.root, "app/shared", grantDoc("Allow", f.partnerARN, readAction, nil))
 
-	requireEqual(t, getSecretString(t, f.partner, describeARN(t, f.root, "app/shared")),
-		"value of app/shared", "granted read")
+	shared := describeARN(t, f.root, "app/shared")
+	private := describeARN(t, f.root, "app/private")
+
+	requireEqual(t, getSecretString(t, f.partner, shared), "value of app/shared", "granted read")
 	// Before resource policies every cross-account request was refused with
 	// the resource-based message; now only the one no policy grants is.
-	err := readSecret(f.partner, "app/private")
-	requireDenied(t, err, resourceDeny(f.partnerARN, "secretsmanager:GetSecretValue",
-		"app/private"))
+	err := readSecret(f.partner, private)
+	requireDenied(t, err, resourceDeny(f.partnerARN, "secretsmanager:GetSecretValue", private))
+
+	// Another account must name the secret by ARN: a name is read in the
+	// caller's own account, where the store holds nothing, whatever the
+	// store's secret of that name grants.
+	err = readSecret(f.partner, "app/shared")
+	requireAs[*smtypes.ResourceNotFoundException](t, err)
 
 	// The batch is the caller's own action, and each secret is evaluated
 	// with its own policy.
 	out, err := f.partner.BatchGetSecretValue(t.Context(), &awssm.BatchGetSecretValueInput{
-		SecretIdList: []string{"app/shared", "app/private"},
+		SecretIdList: []string{shared, private, "app/shared"},
 	})
 	requireNoErr(t, err, "batch get")
 	requireEqual(t, len(out.SecretValues), 1, "values")
 	requireEqual(t, aws.ToString(out.SecretValues[0].Name), "app/shared", "value name")
-	requireEqual(t, len(out.Errors), 1, "errors")
+	requireEqual(t, len(out.Errors), 2, "errors")
 	requireEqual(t, aws.ToString(out.Errors[0].Message), resourceDeny(f.partnerARN,
-		"secretsmanager:GetSecretValue", "app/private"), "error message")
+		"secretsmanager:GetSecretValue", private), "error message")
+	requireEqual(t, aws.ToString(out.Errors[1].ErrorCode), "ResourceNotFoundException",
+		"by-name error code")
 
 	// The resource grant alone is not enough across accounts.
 	f.putPartnerPolicy(t, allowDoc([]string{"secretsmanager:DescribeSecret"}, "*"))
-	err = readSecret(f.partner, "app/shared")
-	requireDenied(t, err, implicitDeny(f.partnerARN, "secretsmanager:GetSecretValue",
-		"app/shared"))
+	err = readSecret(f.partner, shared)
+	requireDenied(t, err, implicitDeny(f.partnerARN, "secretsmanager:GetSecretValue", shared))
 }
 
 func TestAResourcePolicyDenyBeatsAnIdentityAllow(t *testing.T) {

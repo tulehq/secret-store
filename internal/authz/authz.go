@@ -131,6 +131,17 @@ func IsRoot(ctx context.Context) bool {
 	return ok && s.root
 }
 
+// ForeignAccount returns the account of ctx's principal when it is not the
+// store's, and false for a principal of the store's account or a request
+// Attach has not seen.
+func (a *Authorizer) ForeignAccount(ctx context.Context) (string, bool) {
+	s, ok := ctx.Value(subjectKey{}).(*subject)
+	if !ok || s.caller.AccountID == a.account {
+		return "", false
+	}
+	return s.caller.AccountID, true
+}
+
 // Request is one check of a request.
 type Request struct {
 	// Keys are the service condition keys for the check, each of which must

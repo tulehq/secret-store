@@ -396,7 +396,7 @@ func TestAMemberAccountSessionIsVerifiedButDenied(t *testing.T) {
 	sc := smFor(srv, session)
 	sessionARN := "arn:aws:sts::" + member +
 		":assumed-role/OrganizationAccountAccessRole/e2e-session"
-	createSecret(t, smFor(srv, rootCreds()), "example/from-root", "placeholder")
+	rootARN := createSecret(t, smFor(srv, rootCreds()), "example/from-root", "placeholder")
 
 	// The session's signature verifies, and the role's AdministratorAccess
 	// allows everything, but it is another account's: on AWS that needs a
@@ -406,13 +406,16 @@ func TestAMemberAccountSessionIsVerifiedButDenied(t *testing.T) {
 	})
 	requireDenied(t, err, resourceDeny(sessionARN, "secretsmanager:CreateSecret",
 		"example/from-session"))
+	// Another account names a secret by ARN; by name it would be one of its
+	// own account, which the store does not hold.
+	err = readSecret(sc, rootARN)
+	requireDenied(t, err, resourceDeny(sessionARN, "secretsmanager:GetSecretValue", rootARN))
 	err = readSecret(sc, "example/from-root")
-	requireDenied(t, err, resourceDeny(sessionARN, "secretsmanager:GetSecretValue",
-		"example/from-root"))
+	requireCode(t, err, "ResourceNotFoundException")
 
 	tampered := session
 	tampered.SessionToken = tamper(session.SessionToken)
-	err = readSecret(smFor(srv, tampered), "example/from-root")
+	err = readSecret(smFor(srv, tampered), rootARN)
 	requireUnrecognized(t, err)
 
 	// A session's key without its token is unknown, as on AWS.
@@ -421,7 +424,7 @@ func TestAMemberAccountSessionIsVerifiedButDenied(t *testing.T) {
 	}
 	untokened := session
 	untokened.SessionToken = ""
-	err = readSecret(smFor(srv, untokened), "example/from-root")
+	err = readSecret(smFor(srv, untokened), rootARN)
 	requireUnrecognized(t, err)
 }
 

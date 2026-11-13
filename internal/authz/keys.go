@@ -142,6 +142,13 @@ func (a *Authorizer) secretARNBase() string {
 	return "arn:aws:secretsmanager:" + a.region + ":" + a.account + ":secret:"
 }
 
+// SecretARNIn is the ARN of a secret named name in account, in the store's
+// partition and region: where a principal of another account names a secret
+// by name, which Secrets Manager reads in the caller's own account.
+func (a *Authorizer) SecretARNIn(account, name string) string {
+	return "arn:aws:secretsmanager:" + a.region + ":" + account + ":secret:" + name
+}
+
 // arnSuffixLen is the length of the random suffix of a secret's ARN.
 const arnSuffixLen = 6
 
