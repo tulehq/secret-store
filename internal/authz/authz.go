@@ -47,9 +47,11 @@ func New(region, account string) *Authorizer {
 }
 
 // subject is who a request is evaluated as: its principal, the principal's
-// parsed policies and the global condition keys of the request.
+// parsed policies, the global condition keys of the request and the keys
+// whose values are unknown.
 type subject struct {
 	global   map[string][]string
+	unknown  []string
 	caller   policy.Caller
 	policies []*policy.Policy
 	root     bool
@@ -86,6 +88,7 @@ func (a *Authorizer) Attach(r *http.Request) (*http.Request, error) {
 		}
 		s.policies = policies
 		s.global = globalKeys(r, p, a.region)
+		s.unknown = orgUnknown(p)
 	}
 	return r.WithContext(context.WithValue(r.Context(), subjectKey{}, s)), nil
 }
@@ -217,6 +220,7 @@ func (a *Authorizer) Check(ctx context.Context, req Request) error {
 		ResourceAccount: owner,
 		Caller:          s.caller,
 		Context:         keys,
+		Unknown:         s.unknown,
 	}, resource, s.policies...)
 	return decide(az, s.caller.ARN, req)
 }

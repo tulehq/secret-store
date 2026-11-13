@@ -357,7 +357,8 @@ func TestGlobalKeys(t *testing.T) {
 	r.RemoteAddr = "[2001:db8::1]:443"
 	session := sigv4.Principal{
 		AccountID: "000000000000", ARN: sessionARN,
-		Tags: map[string]string{"Team": "core"},
+		Tags:  map[string]string{"Team": "core"},
+		OrgID: "o-a1b2c3d4e5", OrgPaths: []string{"o-a1b2c3d4e5/r-ab12/"},
 	}
 	got = globalKeys(r, session, "us-east-1")
 	want = map[string][]string{
@@ -367,6 +368,8 @@ func TestGlobalKeys(t *testing.T) {
 		"aws:SecureTransport":   {"true"},
 		"aws:SourceIp":          {"2001:db8::1"},
 		"aws:PrincipalTag/Team": {"core"},
+		"aws:PrincipalOrgID":    {"o-a1b2c3d4e5"},
+		"aws:PrincipalOrgPaths": {"o-a1b2c3d4e5/r-ab12/"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("session keys:\n got %v\nwant %v", got, want)
@@ -514,5 +517,73 @@ func TestTheCacheIsBounded(t *testing.T) {
 	}
 	if _, ok := c.docs[sha256.Sum256(first)]; ok {
 		t.Fatal("the oldest document was not evicted")
+	}
+}
+
+func TestOrganizationKeysReachTheConditions(t *testing.T) {
+	a := New("us-east-1", "000000000000")
+	inOrg := `{"Version":"2012-10-17","Statement":{"Effect":"Allow",` +
+		`"Action":"secretsmanager:GetSecretValue","Resource":"*","Condition":{` +
+		`"StringEquals":{"aws:PrincipalOrgID":"o-a1b2c3d4e5"},` +
+		`"ForAnyValue:StringLike":{"aws:PrincipalOrgPaths":"o-a1b2c3d4e5/r-ab12/ou-ab12-11111111/*"}}}}`
+	p := user(inOrg)
+	p.OrgID = "o-a1b2c3d4e5"
+	p.OrgPaths = []string{"o-a1b2c3d4e5/r-ab12/ou-ab12-11111111/"}
+	if err := a.Check(attached(t, a, p).Context(), getValue(secretARN, "app/db")); err != nil {
+		t.Fatalf("a member of the organization: %v", err)
+	}
+	if err := a.Check(attached(t, a, user(inOrg)).Context(),
+		getValue(secretARN, "app/db")); err == nil {
+		t.Fatal("a principal in no organization was allowed")
+	}
+}
+
+func TestUnknownOrganizationKeysAreUnknownNotAbsent(t *testing.T) {
+	a := New("us-east-1", "000000000000")
+	// Both a negated Allow and a Deny on an absent key would let the
+	// principal through: the Allow holds, the Deny lapses. Unknown, the
+	// Allow never holds and the Deny always applies.
+	for _, key := range []string{"aws:PrincipalOrgID", "aws:PrincipalOrgPaths"} {
+		negatedAllow := `{"Version":"2012-10-17","Statement":{"Effect":"Allow",` +
+			`"Action":"*","Resource":"*","Condition":{"ForAllValues:StringNotLike":{"` +
+			key + `":"o-outsider*"}}}}`
+		denyOutside := `{"Version":"2012-10-17","Statement":{"Effect":"Deny",` +
+			`"Action":"*","Resource":"*","Condition":{"ForAnyValue:StringNotLike":{"` +
+			key + `":"o-a1b2c3d4e5*"}}}}`
+
+		p := user(negatedAllow)
+		p.OrgUnknown = true
+		requireDenied(t, a.Check(attached(t, a, p).Context(), getValue(secretARN, "app/db")),
+			"User: "+userARN+" is not authorized to perform: secretsmanager:GetSecretValue "+
+				"on resource: app/db because no identity-based policy allows the "+
+				"secretsmanager:GetSecretValue action")
+		p.OrgUnknown = false
+		if err := a.Check(attached(t, a, p).Context(), getValue(secretARN, "app/db")); err != nil {
+			t.Fatalf("%s: known to be in no organization, the negated Allow: %v", key, err)
+		}
+
+		p = user(allow("*", "*"), denyOutside)
+		p.OrgUnknown = true
+		requireDenied(t, a.Check(attached(t, a, p).Context(), getValue(secretARN, "app/db")),
+			"User: "+userARN+" is not authorized to perform: secretsmanager:GetSecretValue "+
+				"on resource: app/db with an explicit deny in an identity-based policy")
+		p.OrgID = "o-a1b2c3d4e5"
+		p.OrgPaths = []string{"o-a1b2c3d4e5/r-ab12/"}
+		p.OrgUnknown = false
+		if err := a.Check(attached(t, a, p).Context(), getValue(secretARN, "app/db")); err != nil {
+			t.Fatalf("%s: a known member: %v", key, err)
+		}
+	}
+}
+
+func TestOrgUnknownNamesBothKeys(t *testing.T) {
+	if got := orgUnknown(user()); got != nil {
+		t.Fatalf("known: %v", got)
+	}
+	p := user()
+	p.OrgUnknown = true
+	want := []string{"aws:PrincipalOrgID", "aws:PrincipalOrgPaths"}
+	if got := orgUnknown(p); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unknown: got %v, want %v", got, want)
 	}
 }
