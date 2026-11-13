@@ -200,14 +200,16 @@ func TestALargeRepeatedSignedHeadersListIsRefusedCheaply(t *testing.T) {
 	elapsed := time.Since(start)
 	runtime.ReadMemStats(&after)
 
-	requireEqual(t, status, http.StatusForbidden, "status")
-	requireEqual(t, errType, "IncompleteSignatureException", "error type")
+	// The budget comes first, so a verifier that does the work and only then
+	// refuses the request still fails here.
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 32<<20 {
-		t.Fatalf("the request allocated %d MiB, want under 32", allocated>>20)
+		t.Errorf("the request allocated %d MiB, want under 32", allocated>>20)
 	}
 	if elapsed > 500*time.Millisecond {
-		t.Fatalf("the request took %s, want under 500ms", elapsed)
+		t.Errorf("the request took %s, want under 500ms", elapsed)
 	}
+	requireEqual(t, status, http.StatusForbidden, "status")
+	requireEqual(t, errType, "IncompleteSignatureException", "error type")
 }
 
 func TestARequiredHeaderListedNonCanonicallyStaysBound(t *testing.T) {
