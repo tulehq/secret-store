@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awssm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
@@ -246,4 +247,27 @@ func TestARequiredHeaderListedNonCanonicallyStaysBound(t *testing.T) {
 				"secret after the refused request")
 		})
 	}
+}
+
+func TestARequestSignedForAnotherServiceIsRefused(t *testing.T) {
+	srv := startServer(t, nil)
+	createSecret(t, clientFor(srv), "example/app", "placeholder")
+
+	sign := func(service string) *http.Request {
+		req, body := rawRequest(t, srv)
+		sum := sha256.Sum256(body)
+		creds := aws.Credentials{AccessKeyID: "test", SecretAccessKey: "test"}
+		requireNoErr(t, v4.NewSigner().SignHTTP(context.Background(), creds, req,
+			hex.EncodeToString(sum[:]), service, "us-east-1", time.Now()),
+			"sign request for "+service)
+		return req
+	}
+
+	// The premise: the same request signed for secretsmanager is served.
+	status, _ := sendRaw(t, srv, sign("secretsmanager"))
+	requireEqual(t, status, http.StatusOK, "secretsmanager request status")
+
+	status, errType := sendRaw(t, srv, sign("s3"))
+	requireEqual(t, status, http.StatusForbidden, "s3 request status")
+	requireEqual(t, errType, "InvalidSignatureException", "s3 request error type")
 }

@@ -198,7 +198,8 @@ the version already stored, and reusing one with a different value is a
   operation gets `UnknownOperationException`.
 - **Signature verification is request-level.** The method, path, query, signed
   headers and the body's hash are checked, along with the credential's access
-  key and a 15-minute clock skew. There are no presigned URLs in this
+  key, its service, which must be `secretsmanager` (its region is not
+  checked), and a 15-minute clock skew. There are no presigned URLs in this
   protocol. A request body larger than 1 MiB is refused. A signature must
   cover `host`, `x-amz-date`, `x-amz-target` and every other `x-amz-*` header
   the request carries, its `SignedHeaders` must be as SigV4 specifies them
