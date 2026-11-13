@@ -6,7 +6,7 @@ and end-to-end tests: point an AWS SDK at it and the usual secret, version and
 staging-label calls work.
 
 It is not a production secret store. Values are kept as plain JSON files on one
-machine, nothing is encrypted, and the one access key it accepts has access to
+machine, nothing is encrypted, and every access key it accepts has access to
 every secret.
 
 ## Running it
@@ -52,8 +52,9 @@ Settings come from environment variables prefixed with `TULE_`, and from a
 | `TULE_Server_WriteTimeout` | `30s` | How long it may take to write a response |
 | `TULE_Server_IdleTimeout` | `2m` | How long a keep-alive connection may sit idle between requests |
 | `TULE_Server_ShutdownTimeout` | `7s` | How long a graceful shutdown waits for in-flight requests |
-| `TULE_Auth_AccessKeyID` | required | The access key clients sign requests with |
+| `TULE_Auth_AccessKeyID` | required | The access key clients sign requests with; identity's root key when `TULE_Auth_IdentityEndpoint` is set |
 | `TULE_Auth_SecretAccessKey` | required | Its secret |
+| `TULE_Auth_IdentityEndpoint` | unset | The [identity](https://github.com/tulehq/identity) service's base URL, such as `http://localhost:9030`, to also accept the keys it issues. Unset, only the configured key is accepted |
 | `TULE_GasEnv` | | `development` logs console output at trace level, `production` logs at warn level, `testing` disables logging |
 
 The read and write timeouts are sized for a signed request body of up to 1 MiB,
@@ -62,7 +63,29 @@ is no log shipping.
 
 The server refuses to start without an access key, because every request is
 verified against it and any web page the developer has open can reach a server
-on localhost.
+on localhost. It also refuses an identity endpoint that is not an `http` or
+`https` URL.
+
+### Keys issued by identity
+
+With `TULE_Auth_IdentityEndpoint` set, a request signed with any other key is
+verified against identity's signing-key endpoint: its IAM users' access keys
+and the session keys of the roles it lets you assume, token and all. The
+configured key is answered first, without asking identity, and it is also
+what the calls to identity are signed with, so it must be identity's root
+key: `TULE_Auth_AccessKeyID` and `TULE_Auth_SecretAccessKey` set to the same
+values on both services.
+
+identity is asked on every request and nothing is cached, so a key it
+deactivates or deletes is refused on the next request, with
+`UnrecognizedClientException`. A session token that is not the key's is
+refused the same way, and an expired one with `ExpiredTokenException`. When
+identity cannot be reached or fails, a request signed with one of its keys is
+answered `500 InternalServiceError`, never as an unknown key and never as a
+success; the configured key keeps working.
+
+Unset, the service runs on its own exactly as without identity: only the
+configured key is accepted, and identity is never contacted.
 
 `TULE_Store_Seed` is read as a JSON object: each key is a secret name, and each
 value becomes that secret's value, a JSON string unquoted and anything else
@@ -163,9 +186,13 @@ the version already stored, and reusing one with a different value is a
 - **Nothing is encrypted.** Each secret is one JSON file under
   `TULE_Store_RootDir`, named after a hash of the secret's name, holding its
   metadata and every version of its value in the clear.
-- **One access key.** It can read and write every secret. There are no IAM
-  policies, no resource policies and no per-secret permissions, so nothing
-  here tells you whether a deployment's policies are right.
+- **Every accepted key shares every secret.** The configured key, and with
+  an identity endpoint every key identity issued, can read and write every
+  secret. There is no per-account isolation: a key of another account, a
+  role session's included, sees the same secrets, and the ARNs keep
+  `TULE_Store_AccountID` whoever signed. There are no IAM policies, no
+  resource policies and no per-secret permissions, so nothing here tells you
+  whether a deployment's policies are right.
 - **`KmsKeyId` is stored but does nothing.** It is kept with the secret and
   reported back by `DescribeSecret` and `ListSecrets`, so a client sees its own
   setting, and the server logs a warning naming any secret that asks for a key.
@@ -206,8 +233,9 @@ the version already stored, and reusing one with a different value is a
   (lowercase, sorted and unique), and it must carry a real SHA-256 of the
   body: `UNSIGNED-PAYLOAD` is rejected, since it would leave the body
   outside the signature and let a relay swap one operation's body for
-  another's. Only the configured long-term key is accepted, so a request
-  carrying a session token is refused with `UnrecognizedClientException`.
+  another's. The configured key is a long-term one, so a request carrying a
+  session token on it is refused with `UnrecognizedClientException`; session
+  tokens are only accepted on the keys identity issued them for.
 - **Writes are not fsynced.** Each change is written to a temporary file and
   renamed over the old one, so a reader never sees half a secret, but the data
   is only as durable as the page cache: a power loss can lose a write that was
