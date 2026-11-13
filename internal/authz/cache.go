@@ -9,28 +9,38 @@ import (
 	"tule.dev/policy"
 )
 
-// maxCachedDocs bounds the parsed policy documents kept. Each is at most
-// identity's 131,072-character document limit; a principal has a handful, so
-// this covers many principals while holding memory to a known bound.
+// maxCachedDocs bounds the parsed policy documents kept in each cache. An
+// identity policy is at most identity's 131,072-character document limit,
+// and a principal has a handful; a secret's resource policy is at most
+// 20,480 characters, and a secret has one. This covers many principals and
+// secrets while holding memory to a known bound.
 const maxCachedDocs = 1024
 
 // docCache keeps parsed policy documents by the SHA-256 of their bytes, so a
-// principal's policies are parsed once rather than on every request. When it
-// is full the oldest entry goes. Documents that do not parse are not kept.
+// document is parsed once rather than on every request. When it is full the
+// oldest entry goes. Documents that do not parse are not kept.
 type docCache struct {
 	docs  map[[sha256.Size]byte]*policy.Policy
+	parse func([]byte) (*policy.Policy, error)
 	order [][sha256.Size]byte
 	max   int
 	mu    sync.Mutex
 }
 
-func newDocCache(maxDocs int) *docCache {
-	return &docCache{docs: make(map[[sha256.Size]byte]*policy.Policy, maxDocs), max: maxDocs}
+// newDocCache returns a cache of at most maxDocs documents, each parsed with
+// parse: policy.ParseIdentity for identity policies, policy.ParseResource
+// for resource policies.
+func newDocCache(maxDocs int, parse func([]byte) (*policy.Policy, error)) *docCache {
+	return &docCache{
+		docs:  make(map[[sha256.Size]byte]*policy.Policy, maxDocs),
+		parse: parse,
+		max:   maxDocs,
+	}
 }
 
-// parse returns the parsed form of every document, failing on the first that
-// does not parse as an identity-based policy.
-func (c *docCache) parse(docs []json.RawMessage) ([]*policy.Policy, error) {
+// all returns the parsed form of every document, failing on the first that
+// does not parse.
+func (c *docCache) all(docs []json.RawMessage) ([]*policy.Policy, error) {
 	out := make([]*policy.Policy, 0, len(docs))
 	for i, doc := range docs {
 		p, err := c.get(doc)
@@ -52,7 +62,7 @@ func (c *docCache) get(doc []byte) (*policy.Policy, error) {
 		return p, nil
 	}
 
-	p, err := policy.ParseIdentity(doc)
+	p, err := c.parse(doc)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}

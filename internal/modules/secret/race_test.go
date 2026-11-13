@@ -54,7 +54,8 @@ func newSwapper(t *testing.T) (*swapper, *Module, context.Context) {
 	az := authz.New("us-east-1", "000000000000")
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r = r.WithContext(sigv4.NewContext(r.Context(), sigv4.Principal{
-		AccountID: "000000000000", ARN: devARN,
+		AccountID: "000000000000", ARN: devARN, PrincipalARN: devARN,
+		UserID: "AIDAEXAMPLEDEV00001", Type: sigv4.PrincipalTypeUser,
 		Policies: []json.RawMessage{json.RawMessage(denyProd)},
 	}))
 	r, err := az.Attach(r)

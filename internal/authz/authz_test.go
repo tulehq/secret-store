@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"tule.dev/policy"
 	"tule.dev/sigv4"
 
 	"tule.dev/secret-store/internal/smapi"
@@ -38,7 +39,10 @@ func attached(t *testing.T, a *Authorizer, p sigv4.Principal) *http.Request {
 }
 
 func user(docs ...string) sigv4.Principal {
-	p := sigv4.Principal{AccountID: "000000000000", ARN: userARN, AccessKeyID: "AKIAEXAMPLE"}
+	p := sigv4.Principal{
+		AccountID: "000000000000", ARN: userARN, PrincipalARN: userARN,
+		UserID: "AIDAEXAMPLEUSER00001", Type: sigv4.PrincipalTypeUser, AccessKeyID: "AKIAEXAMPLE",
+	}
 	for _, d := range docs {
 		p.Policies = append(p.Policies, json.RawMessage(d))
 	}
@@ -80,6 +84,7 @@ func TestRootIsAllowedWithoutPolicies(t *testing.T) {
 		sigv4.Principal{
 			AccountID: "000000000000",
 			ARN:       "arn:aws:iam::000000000000:root",
+			Type:      sigv4.PrincipalTypeAccount,
 			Root:      true,
 		},
 	)
@@ -115,14 +120,21 @@ func TestAStaticKeyIsRoot(t *testing.T) {
 func TestARootPrincipalOfAnotherAccountIsRefused(t *testing.T) {
 	a := New("us-east-1", "000000000000")
 	const otherRoot = "arn:aws:iam::111122223333:root"
-	r := attached(t, a, sigv4.Principal{AccountID: "111122223333", ARN: otherRoot, Root: true})
+	r := attached(t, a, sigv4.Principal{
+		AccountID: "111122223333", ARN: otherRoot, PrincipalARN: otherRoot,
+		UserID: "111122223333", Type: sigv4.PrincipalTypeAccount, Root: true,
+	})
 
 	if IsRoot(r.Context()) {
 		t.Fatal("IsRoot is true for another account's root")
 	}
+	// It is evaluated as another account's root: its own account allows it
+	// everything, so only the secret's resource policy can grant it, and the
+	// secret has none. (Before resource policies it was refused as "no
+	// identity-based policy allows"; the reason is now the resource side.)
 	err := a.Check(r.Context(), getValue(secretARN, "app/db"))
 	requireDenied(t, err, "User: "+otherRoot+" is not authorized to perform: "+
-		"secretsmanager:GetSecretValue on resource: app/db because no identity-based "+
+		"secretsmanager:GetSecretValue on resource: app/db because no resource-based "+
 		"policy allows the secretsmanager:GetSecretValue action")
 }
 
@@ -331,14 +343,11 @@ func TestGlobalKeys(t *testing.T) {
 
 	got := globalKeys(r, user(), "us-east-1")
 	want := map[string][]string{
-		"aws:RequestedRegion":  {"us-east-1"},
-		"aws:CurrentTime":      {"2026-11-13T09:30:00Z"},
-		"aws:EpochTime":        {"1794562200"},
-		"aws:SecureTransport":  {"false"},
-		"aws:SourceIp":         {"192.0.2.10"},
-		"aws:PrincipalAccount": {"000000000000"},
-		"aws:PrincipalArn":     {userARN},
-		"aws:username":         {"dev"},
+		"aws:RequestedRegion": {"us-east-1"},
+		"aws:CurrentTime":     {"2026-11-13T09:30:00Z"},
+		"aws:EpochTime":       {"1794562200"},
+		"aws:SecureTransport": {"false"},
+		"aws:SourceIp":        {"192.0.2.10"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("user keys:\n got %v\nwant %v", got, want)
@@ -346,16 +355,18 @@ func TestGlobalKeys(t *testing.T) {
 
 	r.TLS = &tls.ConnectionState{}
 	r.RemoteAddr = "[2001:db8::1]:443"
-	session := sigv4.Principal{AccountID: "000000000000", ARN: sessionARN}
+	session := sigv4.Principal{
+		AccountID: "000000000000", ARN: sessionARN,
+		Tags: map[string]string{"Team": "core"},
+	}
 	got = globalKeys(r, session, "us-east-1")
 	want = map[string][]string{
-		"aws:RequestedRegion":  {"us-east-1"},
-		"aws:CurrentTime":      {"2026-11-13T09:30:00Z"},
-		"aws:EpochTime":        {"1794562200"},
-		"aws:SecureTransport":  {"true"},
-		"aws:SourceIp":         {"2001:db8::1"},
-		"aws:PrincipalAccount": {"000000000000"},
-		"aws:PrincipalArn":     {"arn:aws:iam::000000000000:role/reader"},
+		"aws:RequestedRegion":   {"us-east-1"},
+		"aws:CurrentTime":       {"2026-11-13T09:30:00Z"},
+		"aws:EpochTime":         {"1794562200"},
+		"aws:SecureTransport":   {"true"},
+		"aws:SourceIp":          {"2001:db8::1"},
+		"aws:PrincipalTag/Team": {"core"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("session keys:\n got %v\nwant %v", got, want)
@@ -389,22 +400,6 @@ func TestASourceIpConditionIsHonored(t *testing.T) {
 	if err := a.Check(attached(t, a, user(doc("203.0.113.0/24"))).Context(),
 		getValue(secretARN, "app/db")); err == nil {
 		t.Fatal("another address was allowed")
-	}
-}
-
-func TestPrincipalARN(t *testing.T) {
-	cases := map[string]string{
-		userARN:    userARN,
-		sessionARN: "arn:aws:iam::000000000000:role/reader",
-		"arn:aws:sts::000000000000:assumed-role/reader": "",
-		"arn:aws:sts::000000000000:federated-user/x":    "",
-		"not-an-arn": "",
-	}
-	for in, want := range cases {
-		got, ok := principalARN(in)
-		if got != want || ok != (want != "") {
-			t.Errorf("principalARN(%q) = %q, %v; want %q", in, got, ok, want)
-		}
 	}
 }
 
@@ -444,18 +439,22 @@ func TestSecretARNIsRebuiltFromTheStoresOwnFields(t *testing.T) {
 	}
 }
 
-func TestACrossAccountPrincipalIsDenied(t *testing.T) {
+func TestACrossAccountPrincipalIsDeniedWithoutAResourcePolicy(t *testing.T) {
 	a := New("us-east-1", "000000000000")
 	const memberARN = "arn:aws:sts::111122223333:assumed-role/OrganizationAccountAccessRole/s"
 	member := func(docs ...string) sigv4.Principal {
-		p := sigv4.Principal{AccountID: "111122223333", ARN: memberARN}
+		p := sigv4.Principal{
+			AccountID: "111122223333", ARN: memberARN,
+			PrincipalARN: "arn:aws:iam::111122223333:role/OrganizationAccountAccessRole",
+			UserID:       "AROAEXAMPLEMEMBER0001:s", Type: sigv4.PrincipalTypeAssumedRole,
+		}
 		for _, d := range docs {
 			p.Policies = append(p.Policies, json.RawMessage(d))
 		}
 		return p
 	}
 
-	// Its identity policies allow it, but no resource-based policy can.
+	// Its identity policies allow it, but the secret has no resource policy.
 	err := a.Check(attached(t, a, member(allow("*", "*"))).Context(), getValue(secretARN, "app/db"))
 	requireDenied(t, err, "User: "+memberARN+" is not authorized to perform: "+
 		"secretsmanager:GetSecretValue on resource: app/db because no resource-based "+
@@ -475,7 +474,7 @@ func TestACrossAccountPrincipalIsDenied(t *testing.T) {
 }
 
 func TestAParsedPolicyIsCached(t *testing.T) {
-	c := newDocCache(2)
+	c := newDocCache(2, policy.ParseIdentity)
 	doc := []byte(allow("secretsmanager:GetSecretValue", "*"))
 
 	first, err := c.get(doc)
@@ -499,7 +498,7 @@ func TestAParsedPolicyIsCached(t *testing.T) {
 }
 
 func TestTheCacheIsBounded(t *testing.T) {
-	c := newDocCache(2)
+	c := newDocCache(2, policy.ParseIdentity)
 	first := []byte(allow("secretsmanager:GetSecretValue", "*"))
 	if _, err := c.get(first); err != nil {
 		t.Fatal(err)
