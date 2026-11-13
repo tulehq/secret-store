@@ -222,6 +222,12 @@ func startIdentity(t *testing.T, env map[string]string) *sibling {
 	return startSibling(t, "identity", identityDirEnv, "TULE_Store_Path", env)
 }
 
+// startAccounts runs the accounts service.
+func startAccounts(t *testing.T) *sibling {
+	t.Helper()
+	return startSibling(t, "accounts", accountsDirEnv, "TULE_Store_Path", nil)
+}
+
 // startWithIdentity runs secret-store pointed at identity.
 func startWithIdentity(t *testing.T, identity *sibling) *server {
 	t.Helper()
@@ -360,7 +366,7 @@ func TestAnIdentityUserKeyIsAcceptedUntilItIsDeactivatedOrDeleted(t *testing.T) 
 }
 
 func TestAMemberAccountSessionIsVerifiedButDenied(t *testing.T) {
-	accounts := startSibling(t, "accounts", accountsDirEnv, "TULE_Store_Path", nil)
+	accounts := startAccounts(t)
 	oc := orgFor(accounts)
 	_, err := oc.CreateOrganization(t.Context(), &awsorg.CreateOrganizationInput{})
 	requireNoErr(t, err, "create organization")

@@ -192,7 +192,7 @@ type crossAccountFixture struct {
 
 func newCrossAccountFixture(t *testing.T, secrets ...string) *crossAccountFixture {
 	t.Helper()
-	accounts := startSibling(t, "accounts", accountsDirEnv, "TULE_Store_Path", nil)
+	accounts := startAccounts(t)
 	oc := orgFor(accounts)
 	_, err := oc.CreateOrganization(t.Context(), &awsorg.CreateOrganizationInput{})
 	requireNoErr(t, err, "create organization")
