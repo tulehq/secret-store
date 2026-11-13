@@ -245,7 +245,9 @@ evaluation never asks identity. `GetResourcePolicy` shows it as AWS does: an
 ID whose user or role still exists as that principal's current ARN, and one
 whose principal is gone as the ID. The document is otherwise kept as it was
 written; where an ID replaces an ARN, the white space of the object it is in
-is not kept.
+is not kept. The bound policy is held to the same 20,480 characters as the
+one sent, `ValidationException` otherwise, since a unique ID can be longer
+than the ARN it replaces.
 
 - Account IDs, root ARNs, assumed-role session ARNs, `"*"`, service
   principals and ARNs in conditions, such as `aws:PrincipalArn`, are not

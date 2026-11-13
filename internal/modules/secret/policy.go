@@ -270,7 +270,9 @@ const invalidPrincipal = "Invalid principal in policy"
 // principal's unique ID, as AWS stores it. A user or role ARN that no user or
 // role has is MalformedPolicyDocumentException; failing to ask identity is an
 // internal error, so the policy is never stored unbound. The bound document
-// is parsed as the one checks will evaluate.
+// is held to maxPolicyLen, as requirePolicy holds the request's, since a
+// unique ID may be longer than the ARN it replaces, and is parsed as the one
+// checks will evaluate.
 func (m *Module) bindPolicy(ctx context.Context, doc string) (string, error) {
 	bound, err := m.principals.Bind(ctx, doc)
 	if errors.Is(err, principals.ErrInvalidPrincipal) {
@@ -278,6 +280,9 @@ func (m *Module) bindPolicy(ctx context.Context, doc string) (string, error) {
 	}
 	if err != nil {
 		return "", fmt.Errorf("bind the principals of the resource policy: %w", err)
+	}
+	if utf8.RuneCountInString(bound) > maxPolicyLen {
+		return "", smapi.ErrTooLong("resourcePolicy", bound, maxPolicyLen)
 	}
 	if err = m.authz.ParseResourcePolicy(bound); err != nil {
 		// Not wrapped: the binding is at fault, not the request, so this is
