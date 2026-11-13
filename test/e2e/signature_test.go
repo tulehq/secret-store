@@ -204,3 +204,46 @@ func TestALargeRepeatedSignedHeadersListIsRefusedCheaply(t *testing.T) {
 		t.Fatalf("the request took %s, want under 500ms", elapsed)
 	}
 }
+
+func TestARequiredHeaderListedNonCanonicallyStaysBound(t *testing.T) {
+	// A required header listed as " x-amz-target" or "Host" is not the
+	// header sent, so the signature covers an empty value in its place and
+	// the header could be changed in flight: a signed read relayed as a
+	// delete, or a request signed for one host sent to another.
+	tests := []struct {
+		tamper        func(*http.Request)
+		name          string
+		signedHeaders []string
+	}{
+		{
+			name:          "x-amz-target",
+			signedHeaders: []string{"content-type", "host", "x-amz-date", " x-amz-target"},
+			tamper: func(r *http.Request) {
+				r.Header.Set("X-Amz-Target", "secretsmanager.DeleteSecret")
+			},
+		},
+		{
+			name:          "host",
+			signedHeaders: []string{"Host", "content-type", "x-amz-date", "x-amz-target"},
+			tamper:        func(r *http.Request) { r.Host = "elsewhere.example" },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := startServer(t, nil)
+			c := clientFor(srv)
+			createSecret(t, c, "example/app", "placeholder")
+
+			req, body := rawRequest(t, srv)
+			signRaw(t, req, body, tt.signedHeaders)
+			tt.tamper(req)
+			status, errType := sendRaw(t, srv, req)
+			requireEqual(t, status, http.StatusForbidden, "status")
+			requireEqual(t, errType, "IncompleteSignatureException", "error type")
+
+			// Nothing was done in the request's name.
+			requireEqual(t, getSecretString(t, c, "example/app"), "placeholder",
+				"secret after the refused request")
+		})
+	}
+}
