@@ -152,8 +152,8 @@ policy is evaluated on the secret's full ARN.
   its keys with `InternalServiceError`.
 - **Resource policies are bound to unique IDs** when identity is configured
   (see [Unique IDs in resource policies](#unique-ids-in-resource-policies)).
-  A `PutResourcePolicy` or `ValidateResourcePolicy` naming a user or role
-  ARN that no user or role has, which v0.4.0 accepted, is now refused with
+  A `PutResourcePolicy` naming a user or role ARN that no user or role
+  has, which v0.4.0 accepted, is now refused with
   `MalformedPolicyDocumentException`, and a user or role deleted and created
   again under the same ARN no longer inherits what the policy granted.
   `GetResourcePolicy` shows a deleted principal by its unique ID.
@@ -252,14 +252,19 @@ is not kept.
   bound, as AWS does not convert them.
 - A user or role ARN that no user or role has is refused with
   `MalformedPolicyDocumentException`, `Invalid principal in policy`, by
-  `PutResourcePolicy` and by `ValidateResourcePolicy`, and nothing is
-  stored. Secrets Manager documents the exception ("The resource policy has
-  syntax errors.") but not this message, which is the one IAM and S3 give.
-  The principals are looked up only once the request is allowed, so a caller
-  not allowed the action learns nothing of which users and roles exist.
+  `PutResourcePolicy`, and nothing is stored. Secrets Manager documents the
+  exception ("The resource policy has syntax errors.") but not this
+  message, which is the one IAM and S3 give. The principals are looked up
+  only once the request is allowed on the secret, so a caller not allowed
+  the action learns nothing of which users and roles exist.
+- `ValidateResourcePolicy` does not look principals up, and passes a policy
+  naming a user or role that does not exist. AWS documents no such check
+  among its three, and without a `SecretId` the operation is evaluated in
+  the caller's own account, so the check would let a caller of any account
+  learn which users and roles exist.
 - Failing to reach identity fails the call with `InternalServiceError`,
   logged: a write is never stored unbound, and a read never shows the stored
-  IDs in place of the ARNs. Only these three operations ask the
+  IDs in place of the ARNs. Only these two operations ask the
   principal-ID endpoint.
 - Without `TULE_Auth_IdentityEndpoint` there are no unique IDs: a policy is
   stored and returned as it was sent, matched by ARN, and a user ARN is not
@@ -484,7 +489,7 @@ curl -fsS --aws-sigv4 aws:amz:us-east-1:secretsmanager --user test:test \
 | `PutResourcePolicy` | Attaches the secret's one policy, `default`, replacing any; see below |
 | `GetResourcePolicy` | Without a policy, answers the secret's `ARN` and `Name` only |
 | `DeleteResourcePolicy` | Succeeds whether or not the secret has a policy |
-| `ValidateResourcePolicy` | Checks syntax, principals and broad access without storing; `SecretId` optional |
+| `ValidateResourcePolicy` | Checks syntax and broad access without storing; `SecretId` optional |
 
 The resource-policy operations follow the API reference: a `ResourcePolicy`
 of 1 to 20,480 characters (the "Resource-based policy length" quota counts
@@ -503,8 +508,8 @@ with the parser's message, and is never stored. Secrets Manager documents no
 as `ParseResource` accepts it. Length, name and syntax are checked before the
 request is evaluated, so a caller not allowed the action still learns that
 its document is malformed; AWS does not document the order. With identity, a user
-or role ARN no user or role has is `MalformedPolicyDocumentException` too,
-checked only after the request is allowed (see
+or role ARN no user or role has is `MalformedPolicyDocumentException` too
+on `PutResourcePolicy`, checked only after the request is allowed (see
 [Unique IDs in resource policies](#unique-ids-in-resource-policies)).
 
 With `BlockPublicPolicy` set, a policy that grants broad access is refused

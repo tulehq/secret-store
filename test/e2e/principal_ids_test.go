@@ -111,11 +111,15 @@ func TestAPolicyNamingAUserThatDoesNotExistIsRefused(t *testing.T) {
 	requireInvalidPrincipal(t, err)
 	requireEqual(t, getPolicy(t, root), "", "no policy stored")
 
+	// ValidateResourcePolicy does not look principals up, with or without
+	// a secret: AWS documents no such check, and without a secret it is
+	// evaluated in the caller's own account.
 	for _, secret := range []*string{nil, aws.String("app/db")} {
-		_, err = root.ValidateResourcePolicy(t.Context(), &awssm.ValidateResourcePolicyInput{
+		out, err := root.ValidateResourcePolicy(t.Context(), &awssm.ValidateResourcePolicyInput{
 			SecretId: secret, ResourcePolicy: aws.String(doc),
 		})
-		requireInvalidPrincipal(t, err)
+		requireNoErr(t, err, "validate a policy naming no one")
+		requireEqual(t, out.PolicyValidationPassed, true, "validation passed")
 	}
 
 	// Accounts, root ARNs and session ARNs are not bound, and need no user.
