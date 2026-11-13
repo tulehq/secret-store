@@ -206,7 +206,8 @@ the version already stored, and reusing one with a different value is a
   (lowercase, sorted and unique), and it must carry a real SHA-256 of the
   body: `UNSIGNED-PAYLOAD` is rejected, since it would leave the body
   outside the signature and let a relay swap one operation's body for
-  another's.
+  another's. Only the configured long-term key is accepted, so a request
+  carrying a session token is refused with `UnrecognizedClientException`.
 - **Writes are not fsynced.** Each change is written to a temporary file and
   renamed over the old one, so a reader never sees half a secret, but the data
   is only as durable as the page cache: a power loss can lose a write that was
