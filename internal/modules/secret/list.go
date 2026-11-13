@@ -18,6 +18,9 @@ func (m *Module) listSecrets(ctx gas.Context) error {
 	if err = rejectSort(req.SortBy, req.SortOrder); err != nil {
 		return err
 	}
+	if err = m.authorizeAll(ctx, "ListSecrets"); err != nil {
+		return err
+	}
 
 	out, err := m.secrets.ListSecrets(ctx, contracts.ListSecretsInput{
 		NextToken:      req.NextToken,
@@ -57,8 +60,9 @@ func (m *Module) listSecretVersionIDs(ctx gas.Context) error {
 	if err = requireSecretID(req.SecretID); err != nil {
 		return err
 	}
+	sctx := m.guardSecret(ctx, "ListSecretVersionIds", req.SecretID, nil)
 
-	out, err := m.secrets.ListSecretVersions(ctx, contracts.ListSecretVersionsInput{
+	out, err := m.secrets.ListSecretVersions(sctx, contracts.ListSecretVersionsInput{
 		SecretID:          req.SecretID,
 		NextToken:         req.NextToken,
 		MaxResults:        req.MaxResults,

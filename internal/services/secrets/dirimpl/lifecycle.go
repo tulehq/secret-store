@@ -19,6 +19,9 @@ func (s *Service) CreateSecret(
 	if err := validateName(in.Name); err != nil {
 		return nil, err
 	}
+	if err := contracts.CheckTagKeys(in.Tags); err != nil {
+		return nil, err
+	}
 	if !in.Payload.IsZero() {
 		if err := checkPayload(in.Payload); err != nil {
 			return nil, err
@@ -32,7 +35,7 @@ func (s *Service) CreateSecret(
 		return nil, err
 	}
 
-	arn, err := s.mintARN(in.Name)
+	arn, err := s.newARN(in)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +96,7 @@ func (s *Service) mustNotExist(name string) error {
 // UpdateSecret changes a secret's description and, when the request carries a
 // value, stores it as a new AWSCURRENT version.
 func (s *Service) UpdateSecret(
-	_ context.Context,
+	ctx context.Context,
 	in contracts.UpdateSecretInput,
 ) (*contracts.SecretVersion, error) {
 	if !in.Payload.IsZero() {
@@ -105,7 +108,7 @@ func (s *Service) UpdateSecret(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rec, err := s.resolveLive(in.SecretID)
+	rec, err := s.resolveLive(ctx, in.SecretID)
 	if err != nil {
 		return nil, err
 	}
@@ -157,13 +160,13 @@ func (s *Service) updatedVersion(
 // a secret scheduled for deletion still answers, the other being
 // RestoreSecret.
 func (s *Service) DescribeSecret(
-	_ context.Context,
+	ctx context.Context,
 	secretID string,
 ) (*contracts.SecretDetail, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rec, err := s.resolve(secretID)
+	rec, err := s.resolve(ctx, secretID)
 	if err != nil {
 		return nil, err
 	}
@@ -179,17 +182,17 @@ func (s *Service) DescribeSecret(
 // RestoreSecret brings it back; nothing here sweeps it up once its window
 // passes, since the service holds no state between runs beyond these files.
 func (s *Service) DeleteSecret(
-	_ context.Context,
+	ctx context.Context,
 	in contracts.DeleteSecretInput,
 ) (*contracts.DeletedSecret, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if in.Force {
-		return s.forceDelete(in.SecretID)
+		return s.forceDelete(ctx, in.SecretID)
 	}
 
-	rec, err := s.resolveLive(in.SecretID)
+	rec, err := s.resolveLive(ctx, in.SecretID)
 	if err != nil {
 		return nil, err
 	}
@@ -215,10 +218,13 @@ func (s *Service) DeleteSecret(
 // nonexistent secret, the operation does not fail." For a secret it cannot
 // find there is no ARN to report, so the identifier the caller gave is echoed
 // back in its place.
-func (s *Service) forceDelete(secretID string) (*contracts.DeletedSecret, error) {
+func (s *Service) forceDelete(
+	ctx context.Context,
+	secretID string,
+) (*contracts.DeletedSecret, error) {
 	now := s.now().UTC()
 
-	rec, err := s.resolve(secretID)
+	rec, err := s.resolve(ctx, secretID)
 	switch {
 	case errorIsNotFound(err):
 		return &contracts.DeletedSecret{
@@ -246,13 +252,13 @@ func echoRef(secretID string) contracts.SecretRef {
 
 // RestoreSecret cancels a scheduled deletion.
 func (s *Service) RestoreSecret(
-	_ context.Context,
+	ctx context.Context,
 	secretID string,
 ) (*contracts.SecretRef, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rec, err := s.resolve(secretID)
+	rec, err := s.resolve(ctx, secretID)
 	if err != nil {
 		return nil, err
 	}
@@ -272,13 +278,17 @@ func (s *Service) RestoreSecret(
 }
 
 // TagSecret adds tags to a secret, replacing the value of any key it already
-// carries.
+// carries. Tags repeating a key are refused, so the secret's keys stay
+// unique.
 func (s *Service) TagSecret(
-	_ context.Context,
+	ctx context.Context,
 	secretID string,
 	tags []contracts.Tag,
 ) (*contracts.SecretRef, error) {
-	return s.retag(secretID, func(rec *record) {
+	if err := contracts.CheckTagKeys(tags); err != nil {
+		return nil, err
+	}
+	return s.retag(ctx, secretID, func(rec *record) {
 		for _, tag := range tags {
 			if i := slices.IndexFunc(rec.Tags, func(t contracts.Tag) bool {
 				return t.Key == tag.Key
@@ -294,22 +304,26 @@ func (s *Service) TagSecret(
 // UntagSecret removes the named tags from a secret, ignoring keys it does not
 // carry, as Secrets Manager does.
 func (s *Service) UntagSecret(
-	_ context.Context,
+	ctx context.Context,
 	secretID string,
 	keys []string,
 ) (*contracts.SecretRef, error) {
-	return s.retag(secretID, func(rec *record) {
+	return s.retag(ctx, secretID, func(rec *record) {
 		rec.Tags = slices.DeleteFunc(rec.Tags, func(t contracts.Tag) bool {
 			return slices.Contains(keys, t.Key)
 		})
 	})
 }
 
-func (s *Service) retag(secretID string, apply func(*record)) (*contracts.SecretRef, error) {
+func (s *Service) retag(
+	ctx context.Context,
+	secretID string,
+	apply func(*record),
+) (*contracts.SecretRef, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rec, err := s.resolveLive(secretID)
+	rec, err := s.resolveLive(ctx, secretID)
 	if err != nil {
 		return nil, err
 	}

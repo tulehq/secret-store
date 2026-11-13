@@ -5,6 +5,8 @@ package contracts
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -59,7 +61,98 @@ var (
 	// ErrInvalidToken is returned for a pagination token the store did not
 	// issue.
 	ErrInvalidToken = errors.New("secrets: invalid pagination token")
+
+	// ErrDuplicateTagKeys is returned for a write that carries two tags with
+	// the same key, so a secret's tag keys stay unique.
+	ErrDuplicateTagKeys = errors.New("secrets: duplicate tag keys")
 )
+
+// CheckTagKeysFold fails with ErrDuplicateTagKeys when two of tags have keys
+// that are equal regardless of case. IAM matches condition key names
+// regardless of case, so tags Env and env would both feed
+// aws:ResourceTag/env.
+func CheckTagKeysFold(tags []Tag) error {
+	seen := make(map[string]struct{}, len(tags))
+	for _, t := range tags {
+		k := strings.ToLower(t.Key)
+		if _, dup := seen[k]; dup {
+			return fmt.Errorf(
+				"%w: %q differs from another key only by case",
+				ErrDuplicateTagKeys,
+				t.Key,
+			)
+		}
+		seen[k] = struct{}{}
+	}
+	return nil
+}
+
+// CheckTagKeysAgainst fails with ErrDuplicateTagKeys when a key of adding is
+// equal regardless of case to a key of stored but differs from it, so adding
+// them would leave two keys that differ only by case.
+func CheckTagKeysAgainst(adding, stored []Tag) error {
+	for _, a := range adding {
+		for _, s := range stored {
+			if a.Key != s.Key && strings.EqualFold(a.Key, s.Key) {
+				return fmt.Errorf("%w: %q differs from the stored key %q only by case",
+					ErrDuplicateTagKeys, a.Key, s.Key)
+			}
+		}
+	}
+	return nil
+}
+
+// Check authorizes an operation on the secret it acts on. A store calls the
+// Check its context carries (see WithCheck) once it has resolved the
+// request's secret identifier, while it holds the lock it acts under, before
+// it acts: with the secret it found, or nil when no secret matches. An error
+// from the Check is the operation's error, and the store does nothing. The
+// check and the act therefore see the same secret, whatever runs between.
+type Check func(found *SecretDetail) error
+
+type checkKey struct{}
+
+// ErrNoCheck is returned by RunCheck for a context that carries no Check, or
+// a nil one: an operation that reaches the store without saying how it is
+// authorized fails rather than acts.
+var ErrNoCheck = errors.New("secrets: the operation carries no authorization check")
+
+// WithCheck returns ctx carrying c, for the store to run. A nil c is carried
+// as is, and RunCheck fails on it.
+func WithCheck(ctx context.Context, c Check) context.Context {
+	return context.WithValue(ctx, checkKey{}, c)
+}
+
+// Unchecked returns ctx marked as needing no authorization: for the root
+// principal, and for the service's own calls, such as seeding, which no
+// request makes. It is the only way to reach a secret without a Check.
+func Unchecked(ctx context.Context) context.Context {
+	return WithCheck(ctx, allowAll)
+}
+
+func allowAll(*SecretDetail) error { return nil }
+
+// RunCheck runs the Check ctx carries on found. It fails with ErrNoCheck
+// when ctx carries none: a forgotten check never allows.
+func RunCheck(ctx context.Context, found *SecretDetail) error {
+	c, ok := ctx.Value(checkKey{}).(Check)
+	if !ok || c == nil {
+		return ErrNoCheck
+	}
+	return c(found)
+}
+
+// CheckTagKeys fails with ErrDuplicateTagKeys when two of tags share a key.
+func CheckTagKeys(tags []Tag) error {
+	seen := make(map[string]struct{}, len(tags))
+	for _, t := range tags {
+		if _, dup := seen[t.Key]; dup {
+			return fmt.Errorf("%w: %q", ErrDuplicateTagKeys, t.Key)
+		}
+		seen[t.Key] = struct{}{}
+	}
+	return nil
+}
 
 // The staging labels Secrets Manager manages on behalf of the caller.
 // AWSCURRENT marks the version reads return by default and AWSPREVIOUS the one
@@ -83,6 +176,7 @@ const DefaultRecoveryWindow = 30 * 24 * time.Hour
 // the secret lifecycle, the versions of a secret's value, the staging labels
 // that select them, and tags.
 type SecretsProvider interface {
+	NewSecretARN(name string) (string, error)
 	CreateSecret(ctx context.Context, in CreateSecretInput) (*SecretVersion, error)
 	GetSecretValue(ctx context.Context, in GetSecretValueInput) (*SecretValue, error)
 	PutSecretValue(ctx context.Context, in PutSecretValueInput) (*SecretVersion, error)
@@ -195,8 +289,11 @@ type DeletedSecret struct {
 
 // CreateSecretInput creates a secret holding Payload as its first version.
 // VersionID, from the request's client request token, names that version; an
-// empty one is generated.
+// empty one is generated. ARN is the secret's ARN, from NewSecretARN for the
+// same name, so a caller can authorize the request against the ARN the
+// secret will have; an empty one is minted.
 type CreateSecretInput struct {
+	ARN         string
 	Name        string
 	Description string
 	KmsKeyID    string

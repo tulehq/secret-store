@@ -27,11 +27,11 @@ func newTestService(t *testing.T) *Service {
 	clock := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	svc.now = func() time.Time { return clock }
 
-	if err := svc.Init(context.Background()); err != nil {
+	if err := svc.Init(contracts.Unchecked(context.Background())); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := svc.Close(context.Background()); err != nil {
+		if err := svc.Close(contracts.Unchecked(context.Background())); err != nil {
 			t.Errorf("close: %v", err)
 		}
 	})
@@ -44,10 +44,13 @@ func str(s string) *string { return &s }
 func create(t *testing.T, svc *Service, name, value string) *contracts.SecretVersion {
 	t.Helper()
 
-	out, err := svc.CreateSecret(context.Background(), contracts.CreateSecretInput{
-		Name:    name,
-		Payload: contracts.Payload{String: str(value)},
-	})
+	out, err := svc.CreateSecret(
+		contracts.Unchecked(context.Background()),
+		contracts.CreateSecretInput{
+			Name:    name,
+			Payload: contracts.Payload{String: str(value)},
+		},
+	)
 	if err != nil {
 		t.Fatalf("create %s: %v", name, err)
 	}
@@ -58,9 +61,12 @@ func create(t *testing.T, svc *Service, name, value string) *contracts.SecretVer
 func currentValue(t *testing.T, svc *Service, secretID string) string {
 	t.Helper()
 
-	out, err := svc.GetSecretValue(context.Background(), contracts.GetSecretValueInput{
-		SecretID: secretID,
-	})
+	out, err := svc.GetSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.GetSecretValueInput{
+			SecretID: secretID,
+		},
+	)
 	if err != nil {
 		t.Fatalf("get %s: %v", secretID, err)
 	}
@@ -126,7 +132,7 @@ func TestCreateRejects(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := svc.CreateSecret(context.Background(), tt.in)
+			_, err := svc.CreateSecret(contracts.Unchecked(context.Background()), tt.in)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("err = %v, want %v", err, tt.want)
 			}
@@ -137,9 +143,12 @@ func TestCreateRejects(t *testing.T) {
 func TestGetMissing(t *testing.T) {
 	svc := newTestService(t)
 
-	_, err := svc.GetSecretValue(context.Background(), contracts.GetSecretValueInput{
-		SecretID: "absent",
-	})
+	_, err := svc.GetSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.GetSecretValueInput{
+			SecretID: "absent",
+		},
+	)
 	if !errors.Is(err, contracts.ErrSecretNotFound) {
 		t.Fatalf("err = %v, want ErrSecretNotFound", err)
 	}
@@ -149,10 +158,13 @@ func TestPutMovesStagingLabels(t *testing.T) {
 	svc := newTestService(t)
 	first := create(t, svc, "rotating", "v1")
 
-	second, err := svc.PutSecretValue(context.Background(), contracts.PutSecretValueInput{
-		SecretID: "rotating",
-		Payload:  contracts.Payload{String: str("v2")},
-	})
+	second, err := svc.PutSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.PutSecretValueInput{
+			SecretID: "rotating",
+			Payload:  contracts.Payload{String: str("v2")},
+		},
+	)
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -161,10 +173,13 @@ func TestPutMovesStagingLabels(t *testing.T) {
 		t.Fatalf("AWSCURRENT = %q, want v2", got)
 	}
 
-	prev, err := svc.GetSecretValue(context.Background(), contracts.GetSecretValueInput{
-		SecretID:     "rotating",
-		VersionStage: contracts.StagePrevious,
-	})
+	prev, err := svc.GetSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.GetSecretValueInput{
+			SecretID:     "rotating",
+			VersionStage: contracts.StagePrevious,
+		},
+	)
 	if err != nil {
 		t.Fatalf("get AWSPREVIOUS: %v", err)
 	}
@@ -173,10 +188,13 @@ func TestPutMovesStagingLabels(t *testing.T) {
 	}
 
 	// The old value stays reachable by version ID.
-	byID, err := svc.GetSecretValue(context.Background(), contracts.GetSecretValueInput{
-		SecretID:  "rotating",
-		VersionID: first.VersionID,
-	})
+	byID, err := svc.GetSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.GetSecretValueInput{
+			SecretID:  "rotating",
+			VersionID: first.VersionID,
+		},
+	)
 	if err != nil {
 		t.Fatalf("get by version ID: %v", err)
 	}
@@ -197,11 +215,11 @@ func TestPutWithVersionIDIsIdempotent(t *testing.T) {
 		VersionID: "11111111-1111-4111-8111-111111111111",
 		Payload:   contracts.Payload{String: str("v2")},
 	}
-	first, err := svc.PutSecretValue(context.Background(), in)
+	first, err := svc.PutSecretValue(contracts.Unchecked(context.Background()), in)
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	again, err := svc.PutSecretValue(context.Background(), in)
+	again, err := svc.PutSecretValue(contracts.Unchecked(context.Background()), in)
 	if err != nil {
 		t.Fatalf("put again: %v", err)
 	}
@@ -210,7 +228,7 @@ func TestPutWithVersionIDIsIdempotent(t *testing.T) {
 	}
 
 	in.Payload = contracts.Payload{String: str("different")}
-	if _, err = svc.PutSecretValue(context.Background(), in); !errors.Is(
+	if _, err = svc.PutSecretValue(contracts.Unchecked(context.Background()), in); !errors.Is(
 		err, contracts.ErrVersionExists,
 	) {
 		t.Fatalf("err = %v, want ErrVersionExists", err)
@@ -220,16 +238,22 @@ func TestPutWithVersionIDIsIdempotent(t *testing.T) {
 func TestBinaryValueRoundTrips(t *testing.T) {
 	svc := newTestService(t)
 
-	if _, err := svc.CreateSecret(context.Background(), contracts.CreateSecretInput{
-		Name:    "binary",
-		Payload: contracts.Payload{Binary: []byte{0x00, 0x01, 0xff}},
-	}); err != nil {
+	if _, err := svc.CreateSecret(
+		contracts.Unchecked(context.Background()),
+		contracts.CreateSecretInput{
+			Name:    "binary",
+			Payload: contracts.Payload{Binary: []byte{0x00, 0x01, 0xff}},
+		},
+	); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	out, err := svc.GetSecretValue(context.Background(), contracts.GetSecretValueInput{
-		SecretID: "binary",
-	})
+	out, err := svc.GetSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.GetSecretValueInput{
+			SecretID: "binary",
+		},
+	)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -245,9 +269,12 @@ func TestDeleteAndRestore(t *testing.T) {
 	svc := newTestService(t)
 	create(t, svc, "doomed", "v1")
 
-	out, err := svc.DeleteSecret(context.Background(), contracts.DeleteSecretInput{
-		SecretID: "doomed",
-	})
+	out, err := svc.DeleteSecret(
+		contracts.Unchecked(context.Background()),
+		contracts.DeleteSecretInput{
+			SecretID: "doomed",
+		},
+	)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -255,25 +282,31 @@ func TestDeleteAndRestore(t *testing.T) {
 		t.Fatalf("deletion date = %v, want %v", out.DeletionDate, want)
 	}
 
-	_, err = svc.GetSecretValue(context.Background(), contracts.GetSecretValueInput{
-		SecretID: "doomed",
-	})
+	_, err = svc.GetSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.GetSecretValueInput{
+			SecretID: "doomed",
+		},
+	)
 	if !errors.Is(err, contracts.ErrSecretDeleted) {
 		t.Fatalf("get after delete: %v, want ErrSecretDeleted", err)
 	}
 
 	// Describe still answers, which is what makes the scheduled state visible.
-	if _, err = svc.DescribeSecret(context.Background(), "doomed"); err != nil {
+	if _, err = svc.DescribeSecret(
+		contracts.Unchecked(context.Background()),
+		"doomed",
+	); err != nil {
 		t.Fatalf("describe after delete: %v", err)
 	}
 
-	if _, err = svc.RestoreSecret(context.Background(), "doomed"); err != nil {
+	if _, err = svc.RestoreSecret(contracts.Unchecked(context.Background()), "doomed"); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	if got := currentValue(t, svc, "doomed"); got != "v1" {
 		t.Fatalf("value after restore = %q", got)
 	}
-	if _, err = svc.RestoreSecret(context.Background(), "doomed"); !errors.Is(
+	if _, err = svc.RestoreSecret(contracts.Unchecked(context.Background()), "doomed"); !errors.Is(
 		err, contracts.ErrSecretNotDeleted,
 	) {
 		t.Fatalf("restore again: %v, want ErrSecretNotDeleted", err)
@@ -284,14 +317,17 @@ func TestForceDeleteRemovesTheSecret(t *testing.T) {
 	svc := newTestService(t)
 	create(t, svc, "gone", "v1")
 
-	if _, err := svc.DeleteSecret(context.Background(), contracts.DeleteSecretInput{
-		SecretID: "gone",
-		Force:    true,
-	}); err != nil {
+	if _, err := svc.DeleteSecret(
+		contracts.Unchecked(context.Background()),
+		contracts.DeleteSecretInput{
+			SecretID: "gone",
+			Force:    true,
+		},
+	); err != nil {
 		t.Fatalf("force delete: %v", err)
 	}
 
-	if _, err := svc.DescribeSecret(context.Background(), "gone"); !errors.Is(
+	if _, err := svc.DescribeSecret(contracts.Unchecked(context.Background()), "gone"); !errors.Is(
 		err, contracts.ErrSecretNotFound,
 	) {
 		t.Fatalf("describe after force delete: %v, want ErrSecretNotFound", err)
@@ -304,26 +340,26 @@ func TestTags(t *testing.T) {
 	svc := newTestService(t)
 	create(t, svc, "tagged", "v1")
 
-	if _, err := svc.TagSecret(context.Background(), "tagged", []contracts.Tag{
+	if _, err := svc.TagSecret(contracts.Unchecked(context.Background()), "tagged", []contracts.Tag{
 		{Key: "env", Value: "dev"}, {Key: "team", Value: "platform"},
 	}); err != nil {
 		t.Fatalf("tag: %v", err)
 	}
 	// Tagging an existing key replaces its value rather than duplicating it.
-	if _, err := svc.TagSecret(context.Background(), "tagged", []contracts.Tag{
+	if _, err := svc.TagSecret(contracts.Unchecked(context.Background()), "tagged", []contracts.Tag{
 		{Key: "env", Value: "test"},
 	}); err != nil {
 		t.Fatalf("retag: %v", err)
 	}
 	if _, err := svc.UntagSecret(
-		context.Background(),
+		contracts.Unchecked(context.Background()),
 		"tagged",
 		[]string{"team", "absent"},
 	); err != nil {
 		t.Fatalf("untag: %v", err)
 	}
 
-	detail, err := svc.DescribeSecret(context.Background(), "tagged")
+	detail, err := svc.DescribeSecret(contracts.Unchecked(context.Background()), "tagged")
 	if err != nil {
 		t.Fatalf("describe: %v", err)
 	}
@@ -336,11 +372,14 @@ func TestUpdateSecretVersionStage(t *testing.T) {
 	svc := newTestService(t)
 	first := create(t, svc, "staged", "v1")
 
-	second, err := svc.PutSecretValue(context.Background(), contracts.PutSecretValueInput{
-		SecretID:      "staged",
-		Payload:       contracts.Payload{String: str("v2")},
-		VersionStages: []string{contracts.StagePending},
-	})
+	second, err := svc.PutSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.PutSecretValueInput{
+			SecretID:      "staged",
+			Payload:       contracts.Payload{String: str("v2")},
+			VersionStages: []string{contracts.StagePending},
+		},
+	)
 	if err != nil {
 		t.Fatalf("put pending: %v", err)
 	}
@@ -350,7 +389,7 @@ func TestUpdateSecretVersionStage(t *testing.T) {
 	}
 
 	if _, err = svc.UpdateSecretVersionStage(
-		context.Background(),
+		contracts.Unchecked(context.Background()),
 		contracts.UpdateSecretVersionStageInput{
 			SecretID:     "staged",
 			VersionStage: contracts.StageCurrent,
@@ -366,7 +405,7 @@ func TestUpdateSecretVersionStage(t *testing.T) {
 
 	// Moving a label off a version that does not hold it is an error.
 	_, err = svc.UpdateSecretVersionStage(
-		context.Background(),
+		contracts.Unchecked(context.Background()),
 		contracts.UpdateSecretVersionStageInput{
 			SecretID:     "staged",
 			VersionStage: contracts.StagePending,
@@ -384,7 +423,10 @@ func TestListSecretsPages(t *testing.T) {
 		create(t, svc, name, "v")
 	}
 
-	first, err := svc.ListSecrets(context.Background(), contracts.ListSecretsInput{MaxResults: 2})
+	first, err := svc.ListSecrets(
+		contracts.Unchecked(context.Background()),
+		contracts.ListSecretsInput{MaxResults: 2},
+	)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -395,10 +437,13 @@ func TestListSecretsPages(t *testing.T) {
 		t.Fatal("first page has no next token")
 	}
 
-	second, err := svc.ListSecrets(context.Background(), contracts.ListSecretsInput{
-		MaxResults: 2,
-		NextToken:  first.NextToken,
-	})
+	second, err := svc.ListSecrets(
+		contracts.Unchecked(context.Background()),
+		contracts.ListSecretsInput{
+			MaxResults: 2,
+			NextToken:  first.NextToken,
+		},
+	)
 	if err != nil {
 		t.Fatalf("list page two: %v", err)
 	}
@@ -409,9 +454,15 @@ func TestListSecretsPages(t *testing.T) {
 		t.Fatalf("last page has next token %q", second.NextToken)
 	}
 
-	if _, err = svc.ListSecrets(context.Background(), contracts.ListSecretsInput{
-		NextToken: "not base64!",
-	}); !errors.Is(err, contracts.ErrInvalidToken) {
+	if _, err = svc.ListSecrets(
+		contracts.Unchecked(context.Background()),
+		contracts.ListSecretsInput{
+			NextToken: "not base64!",
+		},
+	); !errors.Is(
+		err,
+		contracts.ErrInvalidToken,
+	) {
 		t.Fatalf("err = %v, want ErrInvalidToken", err)
 	}
 }
@@ -421,13 +472,19 @@ func TestListSecretsHidesScheduledDeletions(t *testing.T) {
 	create(t, svc, "kept", "v")
 	create(t, svc, "scheduled", "v")
 
-	if _, err := svc.DeleteSecret(context.Background(), contracts.DeleteSecretInput{
-		SecretID: "scheduled",
-	}); err != nil {
+	if _, err := svc.DeleteSecret(
+		contracts.Unchecked(context.Background()),
+		contracts.DeleteSecretInput{
+			SecretID: "scheduled",
+		},
+	); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
-	out, err := svc.ListSecrets(context.Background(), contracts.ListSecretsInput{})
+	out, err := svc.ListSecrets(
+		contracts.Unchecked(context.Background()),
+		contracts.ListSecretsInput{},
+	)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -435,9 +492,12 @@ func TestListSecretsHidesScheduledDeletions(t *testing.T) {
 		t.Fatalf("list = %v, want [kept]", got)
 	}
 
-	out, err = svc.ListSecrets(context.Background(), contracts.ListSecretsInput{
-		IncludeDeleted: true,
-	})
+	out, err = svc.ListSecrets(
+		contracts.Unchecked(context.Background()),
+		contracts.ListSecretsInput{
+			IncludeDeleted: true,
+		},
+	)
 	if err != nil {
 		t.Fatalf("list including deletions: %v", err)
 	}
@@ -449,17 +509,23 @@ func TestListSecretsHidesScheduledDeletions(t *testing.T) {
 func TestListSecretVersions(t *testing.T) {
 	svc := newTestService(t)
 	first := create(t, svc, "versioned", "v1")
-	second, err := svc.PutSecretValue(context.Background(), contracts.PutSecretValueInput{
-		SecretID: "versioned",
-		Payload:  contracts.Payload{String: str("v2")},
-	})
+	second, err := svc.PutSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.PutSecretValueInput{
+			SecretID: "versioned",
+			Payload:  contracts.Payload{String: str("v2")},
+		},
+	)
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
 
-	out, err := svc.ListSecretVersions(context.Background(), contracts.ListSecretVersionsInput{
-		SecretID: "versioned",
-	})
+	out, err := svc.ListSecretVersions(
+		contracts.Unchecked(context.Background()),
+		contracts.ListSecretVersionsInput{
+			SecretID: "versioned",
+		},
+	)
 	if err != nil {
 		t.Fatalf("list versions: %v", err)
 	}
@@ -479,11 +545,11 @@ func TestSecretsSurviveAReopen(t *testing.T) {
 
 	// A second service on the same directory is what a restart looks like.
 	reopened := NewService(svc.settings)(&gas.NopLogger{})
-	if err := reopened.Init(context.Background()); err != nil {
+	if err := reopened.Init(contracts.Unchecked(context.Background())); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	defer func() {
-		if err := reopened.Close(context.Background()); err != nil {
+		if err := reopened.Close(contracts.Unchecked(context.Background())); err != nil {
 			t.Errorf("close: %v", err)
 		}
 	}()
@@ -512,12 +578,12 @@ func TestUpdateWithVersionIDIsIdempotent(t *testing.T) {
 		VersionID: "33333333-3333-4333-8333-333333333333",
 		Payload:   contracts.Payload{String: str("v2")},
 	}
-	first, err := svc.UpdateSecret(context.Background(), in)
+	first, err := svc.UpdateSecret(contracts.Unchecked(context.Background()), in)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
-	again, err := svc.UpdateSecret(context.Background(), in)
+	again, err := svc.UpdateSecret(contracts.Unchecked(context.Background()), in)
 	if err != nil {
 		t.Fatalf("update again: %v", err)
 	}
@@ -525,7 +591,7 @@ func TestUpdateWithVersionIDIsIdempotent(t *testing.T) {
 		t.Fatalf("retry made version %s, want %s", again.VersionID, first.VersionID)
 	}
 
-	versions, err := svc.ListSecretVersions(context.Background(),
+	versions, err := svc.ListSecretVersions(contracts.Unchecked(context.Background()),
 		contracts.ListSecretVersionsInput{SecretID: "updated", IncludeDeprecated: true})
 	if err != nil {
 		t.Fatalf("list versions: %v", err)
@@ -538,7 +604,7 @@ func TestUpdateWithVersionIDIsIdempotent(t *testing.T) {
 	}
 
 	in.Payload = contracts.Payload{String: str("different")}
-	if _, err = svc.UpdateSecret(context.Background(), in); !errors.Is(
+	if _, err = svc.UpdateSecret(contracts.Unchecked(context.Background()), in); !errors.Is(
 		err, contracts.ErrVersionExists,
 	) {
 		t.Fatalf("err = %v, want ErrVersionExists", err)
@@ -554,17 +620,17 @@ func TestUpdateAppliesTheDescriptionOnARetriedToken(t *testing.T) {
 		VersionID: "44444444-4444-4444-8444-444444444444",
 		Payload:   contracts.Payload{String: str("v2")},
 	}
-	if _, err := svc.UpdateSecret(context.Background(), in); err != nil {
+	if _, err := svc.UpdateSecret(contracts.Unchecked(context.Background()), in); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
 	// The reused version ID must not swallow the rest of the call.
 	in.Description = str("described on the retry")
-	if _, err := svc.UpdateSecret(context.Background(), in); err != nil {
+	if _, err := svc.UpdateSecret(contracts.Unchecked(context.Background()), in); err != nil {
 		t.Fatalf("update again: %v", err)
 	}
 
-	detail, err := svc.DescribeSecret(context.Background(), "retried")
+	detail, err := svc.DescribeSecret(contracts.Unchecked(context.Background()), "retried")
 	if err != nil {
 		t.Fatalf("describe: %v", err)
 	}
@@ -579,11 +645,14 @@ func stagedSecret(t *testing.T, svc *Service) (first, second *contracts.SecretVe
 	t.Helper()
 
 	first = create(t, svc, "staging", "v1")
-	second, err := svc.PutSecretValue(context.Background(), contracts.PutSecretValueInput{
-		SecretID:      "staging",
-		Payload:       contracts.Payload{String: str("v2")},
-		VersionStages: []string{contracts.StagePending},
-	})
+	second, err := svc.PutSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.PutSecretValueInput{
+			SecretID:      "staging",
+			Payload:       contracts.Payload{String: str("v2")},
+			VersionStages: []string{contracts.StagePending},
+		},
+	)
 	if err != nil {
 		t.Fatalf("put pending: %v", err)
 	}
@@ -598,7 +667,7 @@ func TestMovingCurrentCarriesPreviousAlong(t *testing.T) {
 	// label AWSPREVIOUS to the version that AWSCURRENT was removed from."
 	// -- UpdateSecretVersionStage, aws-sdk-go-v2 secretsmanager v1.50.5.
 	if _, err := svc.UpdateSecretVersionStage(
-		context.Background(),
+		contracts.Unchecked(context.Background()),
 		contracts.UpdateSecretVersionStageInput{
 			SecretID:     "staging",
 			VersionStage: contracts.StageCurrent,
@@ -609,10 +678,13 @@ func TestMovingCurrentCarriesPreviousAlong(t *testing.T) {
 		t.Fatalf("promote: %v", err)
 	}
 
-	previous, err := svc.GetSecretValue(context.Background(), contracts.GetSecretValueInput{
-		SecretID:     "staging",
-		VersionStage: contracts.StagePrevious,
-	})
+	previous, err := svc.GetSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.GetSecretValueInput{
+			SecretID:     "staging",
+			VersionStage: contracts.StagePrevious,
+		},
+	)
 	if err != nil {
 		t.Fatalf("get AWSPREVIOUS: %v", err)
 	}
@@ -632,7 +704,7 @@ func TestStageMoveRequiresTheVersionItIsAttachedTo(t *testing.T) {
 	// this parameter, or the version ID does not match, then the operation
 	// fails." -- RemoveFromVersionId, same package.
 	_, err := svc.UpdateSecretVersionStage(
-		context.Background(),
+		contracts.Unchecked(context.Background()),
 		contracts.UpdateSecretVersionStageInput{
 			SecretID:     "staging",
 			VersionStage: contracts.StageCurrent,
@@ -649,7 +721,7 @@ func TestCurrentStageCannotBeRemovedOutright(t *testing.T) {
 	first, _ := stagedSecret(t, svc)
 
 	_, err := svc.UpdateSecretVersionStage(
-		context.Background(),
+		contracts.Unchecked(context.Background()),
 		contracts.UpdateSecretVersionStageInput{
 			SecretID:     "staging",
 			VersionStage: contracts.StageCurrent,
@@ -672,9 +744,12 @@ func TestForceDeleteNeverFails(t *testing.T) {
 	// secretsmanager v1.50.5.
 	svc := newTestService(t)
 	create(t, svc, "scheduled", "v1")
-	if _, err := svc.DeleteSecret(context.Background(), contracts.DeleteSecretInput{
-		SecretID: "scheduled",
-	}); err != nil {
+	if _, err := svc.DeleteSecret(
+		contracts.Unchecked(context.Background()),
+		contracts.DeleteSecretInput{
+			SecretID: "scheduled",
+		},
+	); err != nil {
 		t.Fatalf("schedule deletion: %v", err)
 	}
 
@@ -688,10 +763,13 @@ func TestForceDeleteNeverFails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := svc.DeleteSecret(context.Background(), contracts.DeleteSecretInput{
-				SecretID: tt.secretID,
-				Force:    true,
-			})
+			out, err := svc.DeleteSecret(
+				contracts.Unchecked(context.Background()),
+				contracts.DeleteSecretInput{
+					SecretID: tt.secretID,
+					Force:    true,
+				},
+			)
 			if err != nil {
 				t.Fatalf("force delete: %v", err)
 			}
@@ -702,8 +780,12 @@ func TestForceDeleteNeverFails(t *testing.T) {
 	}
 
 	// The scheduled secret really is gone, not just reported as deleted.
-	if _, err := svc.DescribeSecret(context.Background(), "scheduled"); !errors.Is(
-		err, contracts.ErrSecretNotFound,
+	if _, err := svc.DescribeSecret(
+		contracts.Unchecked(context.Background()),
+		"scheduled",
+	); !errors.Is(
+		err,
+		contracts.ErrSecretNotFound,
 	) {
 		t.Fatalf("describe after force delete: %v, want ErrSecretNotFound", err)
 	}
@@ -713,28 +795,37 @@ func TestValueSizeLimit(t *testing.T) {
 	svc := newTestService(t)
 	atLimit := strings.Repeat("a", contracts.MaxValueSize)
 
-	if _, err := svc.CreateSecret(context.Background(), contracts.CreateSecretInput{
-		Name:    "at-limit",
-		Payload: contracts.Payload{String: &atLimit},
-	}); err != nil {
+	if _, err := svc.CreateSecret(
+		contracts.Unchecked(context.Background()),
+		contracts.CreateSecretInput{
+			Name:    "at-limit",
+			Payload: contracts.Payload{String: &atLimit},
+		},
+	); err != nil {
 		t.Fatalf("create at the limit: %v", err)
 	}
 
 	// One byte over is rejected here, so a value that works against this
 	// service works against the real one too.
 	over := atLimit + "a"
-	_, err := svc.CreateSecret(context.Background(), contracts.CreateSecretInput{
-		Name:    "over-limit",
-		Payload: contracts.Payload{String: &over},
-	})
+	_, err := svc.CreateSecret(
+		contracts.Unchecked(context.Background()),
+		contracts.CreateSecretInput{
+			Name:    "over-limit",
+			Payload: contracts.Payload{String: &over},
+		},
+	)
 	if !errors.Is(err, contracts.ErrValueTooLarge) {
 		t.Fatalf("create over the limit: %v, want ErrValueTooLarge", err)
 	}
 
-	_, err = svc.PutSecretValue(context.Background(), contracts.PutSecretValueInput{
-		SecretID: "at-limit",
-		Payload:  contracts.Payload{Binary: []byte(over)},
-	})
+	_, err = svc.PutSecretValue(
+		contracts.Unchecked(context.Background()),
+		contracts.PutSecretValueInput{
+			SecretID: "at-limit",
+			Payload:  contracts.Payload{Binary: []byte(over)},
+		},
+	)
 	if !errors.Is(err, contracts.ErrValueTooLarge) {
 		t.Fatalf("put over the limit: %v, want ErrValueTooLarge", err)
 	}

@@ -321,6 +321,11 @@ func TestAnIdentityUserKeyIsAcceptedUntilItIsDeactivatedOrDeleted(t *testing.T) 
 	root := smFor(srv, rootCreds())
 
 	userCreds := createUserKey(t, ic, "dev")
+	// The key is evaluated against the user's policies, so it gets one for
+	// what it does here.
+	putDevPolicy(t, ic, allowDoc(
+		[]string{"secretsmanager:CreateSecret", "secretsmanager:GetSecretValue"},
+		"arn:aws:secretsmanager:*:*:secret:example/*"))
 	user := smFor(srv, userCreds)
 
 	// Every accepted principal shares the service's secrets, and the ARNs
@@ -354,7 +359,7 @@ func TestAnIdentityUserKeyIsAcceptedUntilItIsDeactivatedOrDeleted(t *testing.T) 
 		"root read after deletion")
 }
 
-func TestAnAssumedRoleSessionIsAccepted(t *testing.T) {
+func TestAMemberAccountSessionIsVerifiedButDenied(t *testing.T) {
 	accounts := startSibling(t, "accounts", accountsDirEnv, "TULE_Store_Path", nil)
 	oc := orgFor(accounts)
 	_, err := oc.CreateOrganization(t.Context(), &awsorg.CreateOrganizationInput{})
@@ -389,20 +394,25 @@ func TestAnAssumedRoleSessionIsAccepted(t *testing.T) {
 	}
 
 	sc := smFor(srv, session)
-	arn := createSecret(t, sc, "example/from-session", "placeholder")
-	// The session is the member account's, but there is no per-account
-	// isolation: the ARN keeps the configured account.
-	if !strings.Contains(arn, ":000000000000:") {
-		t.Fatalf("ARN %s does not carry the configured account", arn)
-	}
-	requireEqual(t, getSecretString(t, sc, "example/from-session"), "placeholder",
-		"session read")
-	requireEqual(t, getSecretString(t, smFor(srv, rootCreds()), "example/from-session"),
-		"placeholder", "root read")
+	sessionARN := "arn:aws:sts::" + member +
+		":assumed-role/OrganizationAccountAccessRole/e2e-session"
+	createSecret(t, smFor(srv, rootCreds()), "example/from-root", "placeholder")
+
+	// The session's signature verifies, and the role's AdministratorAccess
+	// allows everything, but it is another account's: on AWS that needs a
+	// resource-based policy too, which nothing here can grant.
+	_, err = sc.CreateSecret(t.Context(), &awssm.CreateSecretInput{
+		Name: aws.String("example/from-session"), SecretString: aws.String("placeholder"),
+	})
+	requireDenied(t, err, resourceDeny(sessionARN, "secretsmanager:CreateSecret",
+		"example/from-session"))
+	err = readSecret(sc, "example/from-root")
+	requireDenied(t, err, resourceDeny(sessionARN, "secretsmanager:GetSecretValue",
+		"example/from-root"))
 
 	tampered := session
 	tampered.SessionToken = tamper(session.SessionToken)
-	err = readSecret(smFor(srv, tampered), "example/from-session")
+	err = readSecret(smFor(srv, tampered), "example/from-root")
 	requireUnrecognized(t, err)
 
 	// A session's key without its token is unknown, as on AWS.
@@ -411,18 +421,18 @@ func TestAnAssumedRoleSessionIsAccepted(t *testing.T) {
 	}
 	untokened := session
 	untokened.SessionToken = ""
-	err = readSecret(smFor(srv, untokened), "example/from-session")
+	err = readSecret(smFor(srv, untokened), "example/from-root")
 	requireUnrecognized(t, err)
-
-	requireEqual(t, getSecretString(t, sc, "example/from-session"), "placeholder",
-		"session read after the refused ones")
 }
 
 func TestIdentityGoingDownFailsClosed(t *testing.T) {
 	identity := startIdentity(t, nil)
 	srv := startWithIdentity(t, identity)
 	root := smFor(srv, rootCreds())
-	user := smFor(srv, createUserKey(t, iamFor(identity), "dev"))
+	ic := iamFor(identity)
+	user := smFor(srv, createUserKey(t, ic, "dev"))
+	putDevPolicy(t, ic, allowDoc(
+		[]string{"secretsmanager:GetSecretValue"}, "arn:aws:secretsmanager:*:*:secret:example/*"))
 
 	createSecret(t, root, "example/app", "placeholder")
 	requireEqual(t, getSecretString(t, user, "example/app"), "placeholder", "user read")

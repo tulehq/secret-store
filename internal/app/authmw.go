@@ -8,6 +8,7 @@ import (
 	"tule.dev/identity/keysource"
 	"tule.dev/sigv4"
 
+	"tule.dev/secret-store/internal/authz"
 	"tule.dev/secret-store/internal/modules/health"
 	"tule.dev/secret-store/internal/smapi"
 )
@@ -92,13 +93,15 @@ func verifierFor(keys sigv4.KeySource) (*sigv4.Verifier, error) {
 }
 
 // verifySignature rejects requests whose SigV4 signature does not verify
-// against v, and serves the rest as Verify returns them: with the body the
-// signature covered and the signer in the context.
+// against v, and serves the rest as Verify returns them, with the body the
+// signature covered and the signer in the context, and with what az
+// evaluates the signer's requests against. A signer whose policies cannot be
+// read is refused as InternalServiceError, never served unevaluated.
 //
 // The health probes are exempt, so a container's health check needs no
 // credentials; nothing else is, because any web page the developer has open
 // can reach a server on localhost, and this one serves secrets.
-func verifySignature(v *sigv4.Verifier) func(http.Handler) http.Handler {
+func verifySignature(v *sigv4.Verifier, az *authz.Authorizer) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isProbe(r.URL.Path) {
@@ -110,7 +113,12 @@ func verifySignature(v *sigv4.Verifier) func(http.Handler) http.Handler {
 				smapi.WriteHTTPError(w, r, err)
 				return
 			}
-			next.ServeHTTP(w, verified)
+			attached, err := az.Attach(verified)
+			if err != nil {
+				smapi.WriteHTTPError(w, verified, err)
+				return
+			}
+			next.ServeHTTP(w, attached)
 		})
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,5 +118,15 @@ func TestErrorEnvelopeShape(t *testing.T) {
 	}
 	if want := `{"__type":"ResourceNotFoundException","Message":"nope"}`; string(body) != want {
 		t.Fatalf("envelope = %s, want %s", body, want)
+	}
+}
+
+func TestErrTooLongCutsTheEchoedValue(t *testing.T) {
+	err := ErrTooLong("secretId", strings.Repeat("a", 1<<20), 2048)
+	want := "1 validation error detected: Value '" + strings.Repeat("a", 2048) +
+		"...' at 'secretId' failed to satisfy constraint: Member must have length " +
+		"less than or equal to 2048"
+	if err.Message != want || err.Type != TypeValidation || err.Status != http.StatusBadRequest {
+		t.Fatalf("got %d %s %.80q...", err.Status, err.Type, err.Message)
 	}
 }

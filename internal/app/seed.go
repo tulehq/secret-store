@@ -71,11 +71,16 @@ func createSeed(
 	name string,
 	value json.RawMessage,
 ) error {
-	_, err := secrets.CreateSecret(context.Background(), contracts.CreateSecretInput{
-		Name:        name,
-		Description: "Seeded at startup from TULE_Store_Seed.",
-		Payload:     contracts.Payload{String: seedValue(value)},
-	})
+	// Seeding is the service's own call, which no request makes, so it is
+	// explicitly unchecked.
+	_, err := secrets.CreateSecret(
+		contracts.Unchecked(context.Background()),
+		contracts.CreateSecretInput{
+			Name:        name,
+			Description: "Seeded at startup from TULE_Store_Seed.",
+			Payload:     contracts.Payload{String: seedValue(value)},
+		},
+	)
 
 	switch {
 	case err == nil, errors.Is(err, contracts.ErrSecretExists):
