@@ -22,7 +22,7 @@ func signatureError(e *sigv4.Error) error {
 		sigv4.KindUnsignedHeader, sigv4.KindMalformedCredential,
 		sigv4.KindCredentialDateMismatch, sigv4.KindPayloadHashNotAccepted:
 		return smapi.NewError(http.StatusForbidden, smapi.TypeIncompleteSig, e.Message)
-	case sigv4.KindRequestTimeTooSkewed, sigv4.KindSignatureMismatch:
+	case sigv4.KindRequestTimeTooSkewed, sigv4.KindSignatureMismatch, sigv4.KindWrongService:
 		return smapi.NewError(http.StatusForbidden, smapi.TypeInvalidSignature, e.Message)
 	case sigv4.KindUnknownAccessKey, sigv4.KindInvalidSessionToken:
 		return smapi.NewError(http.StatusForbidden, smapi.TypeUnrecognizedClient, e.Message)

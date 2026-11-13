@@ -28,6 +28,7 @@ func TestSignatureErrorAnswersEachKindAsSecretsManagerDoes(t *testing.T) {
 		{smapi.TypeIncompleteSig, sigv4.KindPayloadHashNotAccepted, http.StatusForbidden},
 		{smapi.TypeInvalidSignature, sigv4.KindRequestTimeTooSkewed, http.StatusForbidden},
 		{smapi.TypeInvalidSignature, sigv4.KindSignatureMismatch, http.StatusForbidden},
+		{smapi.TypeInvalidSignature, sigv4.KindWrongService, http.StatusForbidden},
 		{smapi.TypeUnrecognizedClient, sigv4.KindUnknownAccessKey, http.StatusForbidden},
 		{smapi.TypeUnrecognizedClient, sigv4.KindInvalidSessionToken, http.StatusForbidden},
 		{smapi.TypeExpiredToken, sigv4.KindExpiredSessionToken, http.StatusForbidden},

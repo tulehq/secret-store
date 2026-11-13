@@ -24,6 +24,9 @@ const maxRequestBody = 1 << 20
 // The signature must cover X-Amz-Target as well as Host and X-Amz-Date: it
 // names the operation, and left unsigned it would let whoever relays a signed
 // read turn it into a delete, since the two carry the same body.
+// The credential must be scoped to secretsmanager, so a signature made for
+// another service is not one for this one. Its region is not checked: the
+// configured region only appears in the ARNs the store mints.
 func newVerifier(auth *authSettings, accountID string) (*sigv4.Verifier, error) {
 	keys, err := sigv4.NewStaticKey(sigv4.StaticKeyConfig{
 		AccessKeyID:     auth.AccessKeyID,
@@ -37,6 +40,7 @@ func newVerifier(auth *authSettings, accountID string) (*sigv4.Verifier, error) 
 		keys,
 		sigv4.WithBufferedPayload(maxRequestBody),
 		sigv4.WithRequiredSignedHeaders("host", "x-amz-date", "x-amz-target"),
+		sigv4.WithService("secretsmanager"),
 		sigv4.WithErrorMap(signatureError),
 	)
 	if err != nil {
