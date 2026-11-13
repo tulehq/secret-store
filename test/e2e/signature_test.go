@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"runtime"
 	"strings"
@@ -16,7 +17,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	awssm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/smithy-go"
 )
 
 // roundTripFunc is an http.RoundTripper made of a function.
@@ -270,4 +274,30 @@ func TestARequestSignedForAnotherServiceIsRefused(t *testing.T) {
 	status, errType := sendRaw(t, srv, sign("s3"))
 	requireEqual(t, status, http.StatusForbidden, "s3 request status")
 	requireEqual(t, errType, "InvalidSignatureException", "s3 request error type")
+}
+
+func TestASessionTokenIsRefused(t *testing.T) {
+	srv := startServer(t, nil)
+	createSecret(t, clientFor(srv), "example/app", "placeholder")
+
+	// The configured key is a long-term one, so temporary credentials that
+	// name it are not its own: the SDK signs their token in, and the static
+	// key refuses it, as AWS refuses a token that is not the key's.
+	c := clientFor(srv, func(o *awssm.Options) {
+		o.Credentials = credentials.NewStaticCredentialsProvider("test", "test", "token")
+	})
+	_, err := c.GetSecretValue(context.Background(), &awssm.GetSecretValueInput{
+		SecretId: aws.String("example/app"),
+	})
+	requireCode(t, err, "UnrecognizedClientException")
+
+	var apiErr smithy.APIError
+	errors.As(err, &apiErr)
+	requireEqual(t, apiErr.ErrorMessage(),
+		"The security token included in the request is invalid.", "error message")
+	var resErr *awshttp.ResponseError
+	if !errors.As(err, &resErr) {
+		t.Fatalf("want an HTTP response error, got %v", err)
+	}
+	requireEqual(t, resErr.HTTPStatusCode(), http.StatusForbidden, "status")
 }
