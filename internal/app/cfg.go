@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/gasmod/gas"
@@ -17,11 +18,18 @@ type hstsSettings struct {
 	MaxAge time.Duration
 }
 
-// authSettings holds the one access key the server accepts. Every request
-// must be SigV4-signed with it, so both fields are required.
+// authSettings holds the access key the server accepts. Every request must
+// be SigV4-signed with it, or with a key the identity service issued, so both
+// key fields are required.
+//
+// IdentityEndpoint is the identity service's base URL, or empty to accept the
+// configured key alone. When it is set, the configured key must be identity's
+// root key: it is what the calls to identity's signing-key endpoint are
+// signed with.
 type authSettings struct {
-	AccessKeyID     string
-	SecretAccessKey string
+	AccessKeyID      string
+	SecretAccessKey  string
+	IdentityEndpoint string
 }
 
 // errNoCredentials is returned when the access key is not configured.
@@ -95,8 +103,25 @@ func bindConfig(store gas.ConfigProvider, env config.Environment) (*Config, erro
 	if cfg.Auth == nil || cfg.Auth.AccessKeyID == "" || cfg.Auth.SecretAccessKey == "" {
 		return nil, errNoCredentials
 	}
+	if err := checkIdentityEndpoint(cfg.Auth.IdentityEndpoint); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
+}
+
+// checkIdentityEndpoint holds the identity endpoint, when set, to an
+// absolute http or https URL.
+func checkIdentityEndpoint(endpoint string) error {
+	if endpoint == "" {
+		return nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("config: Auth.IdentityEndpoint %q is not an http or https URL",
+			endpoint)
+	}
+	return nil
 }
 
 func applyDefaults(store gas.ConfigProvider) error {

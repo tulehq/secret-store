@@ -46,6 +46,36 @@ func TestLoadConfigRequiresCredentials(t *testing.T) {
 	}
 }
 
+func TestLoadConfigChecksTheIdentityEndpoint(t *testing.T) {
+	for _, value := range []string{"localhost:9030", "http://", "ftp://localhost:9030", "/identity"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TULE_Auth_IdentityEndpoint", value)
+			if _, err := loadEnvConfig(t, "AKID", "secret"); err == nil {
+				t.Fatalf("load config with TULE_Auth_IdentityEndpoint=%q succeeded", value)
+			}
+		})
+	}
+}
+
+func TestLoadConfigReadsTheIdentityEndpoint(t *testing.T) {
+	cfg, err := loadEnvConfig(t, "AKID", "secret")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got := cfg.Auth.IdentityEndpoint; got != "" {
+		t.Fatalf("default identity endpoint = %q, want none", got)
+	}
+
+	t.Setenv("TULE_Auth_IdentityEndpoint", "http://127.0.0.1:9030")
+	cfg, err = loadEnvConfig(t, "AKID", "secret")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got := cfg.Auth.IdentityEndpoint; got != "http://127.0.0.1:9030" {
+		t.Fatalf("identity endpoint = %q, want http://127.0.0.1:9030", got)
+	}
+}
+
 func TestLoadConfigDefaults(t *testing.T) {
 	cfg, err := loadEnvConfig(t, "AKID", "secret")
 	if err != nil {
