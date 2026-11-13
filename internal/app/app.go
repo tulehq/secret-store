@@ -8,6 +8,7 @@ import (
 	"github.com/gasmod/gas"
 	"tule.dev/sigv4"
 
+	"tule.dev/secret-store/internal/authz"
 	"tule.dev/secret-store/internal/contracts"
 	"tule.dev/secret-store/internal/httpx"
 	"tule.dev/secret-store/internal/modules/health"
@@ -34,10 +35,12 @@ func New(cfg *Config, extra ...gas.Option) (*gas.App, error) {
 		return nil, vErr
 	}
 
+	az := authz.New(cfg.Store.Region, cfg.Store.AccountID)
+
 	registerInfraServices(app, cfg, logger)
-	registerAppServices(app, cfg)
+	registerAppServices(app, cfg, az)
 	registerAppModules(app)
-	installMiddleware(app.Router(), cfg, logger, verifier)
+	installMiddleware(app.Router(), cfg, logger, verifier, az)
 	app.ReadyFunc(seedSecrets(cfg.Store.Seed))
 
 	return app, nil
@@ -49,8 +52,9 @@ func registerInfraServices(app *gas.App, cfg *Config, logger gas.Logger) {
 	app.RegisterScopedService[httpx.RequestLogger](resolveRequestLogger)
 }
 
-func registerAppServices(app *gas.App, cfg *Config) {
+func registerAppServices(app *gas.App, cfg *Config, az *authz.Authorizer) {
 	app.RegisterSingletonService[contracts.SecretsProvider](dirimpl.NewService(cfg.Store))
+	app.RegisterServiceInstance[*authz.Authorizer](az)
 }
 
 func registerAppModules(app *gas.App) {
@@ -58,7 +62,13 @@ func registerAppModules(app *gas.App) {
 	app.RegisterSingletonService[*health.Module](health.NewModule)
 }
 
-func installMiddleware(r *gas.Router, cfg *Config, logger gas.Logger, v *sigv4.Verifier) {
+func installMiddleware(
+	r *gas.Router,
+	cfg *Config,
+	logger gas.Logger,
+	v *sigv4.Verifier,
+	az *authz.Authorizer,
+) {
 	r.UseMiddlewareFunc(nil, httpx.RequestID(cfg.Env))
 
 	// No X-Forwarded-For handling: nothing is expected in front of this
@@ -69,7 +79,7 @@ func installMiddleware(r *gas.Router, cfg *Config, logger gas.Logger, v *sigv4.V
 
 	r.UseMiddlewareFunc(nil, gas.RequestLogger[httpx.RequestLogger]())
 
-	r.UseMiddlewareFunc(nil, verifySignature(v))
+	r.UseMiddlewareFunc(nil, verifySignature(v, az))
 
 	var hsts string
 	if cfg.HSTS != nil && cfg.HSTS.MaxAge > 0 {

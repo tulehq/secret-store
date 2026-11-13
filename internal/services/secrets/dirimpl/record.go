@@ -1,6 +1,7 @@
 package dirimpl
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -191,35 +192,54 @@ func (s *Service) remove(name string) error {
 	return nil
 }
 
-// resolve loads the secret a request's identifier names, which may be its
-// name, its full ARN or its ARN without the random suffix.
-func (s *Service) resolve(secretID string) (*record, error) {
-	names := candidateNames(secretID)
-	if len(names) == 0 {
-		return nil, fmt.Errorf("%w: %s", contracts.ErrSecretNotFound, secretID)
+// resolve loads the secret a request's identifier names, as lookup does, and
+// runs the contracts.Check ctx carries on it, or on nil when there is none,
+// so the operation is authorized on the very secret it acts on. It is called
+// with s.mu held, by every operation that acts on one secret. A failed Check
+// wins over not finding the secret, so a caller the Check refuses learns
+// nothing of whether it exists.
+func (s *Service) resolve(ctx context.Context, secretID string) (*record, error) {
+	rec, err := s.lookup(secretID)
+	if err != nil && !errors.Is(err, contracts.ErrSecretNotFound) {
+		return nil, err
 	}
-
-	for _, name := range names {
-		rec, err := s.read(name)
-		switch {
-		case err == nil && (!strings.HasPrefix(secretID, arnPrefix) || matchesARN(rec, secretID)):
-			return rec, nil
-		case err != nil && !errors.Is(err, contracts.ErrSecretNotFound):
-			return nil, err
-		}
+	var found *contracts.SecretDetail
+	if rec != nil {
+		detail := rec.detail()
+		found = &detail
 	}
-	return nil, fmt.Errorf("%w: %s", contracts.ErrSecretNotFound, secretID)
+	if cErr := contracts.RunCheck(ctx, found); cErr != nil {
+		return nil, cErr
+	}
+	return rec, err
 }
 
-// matchesARN reports whether an ARN identifies rec: either its ARN exactly, or
-// the same ARN without the random suffix, which Secrets Manager accepts as a
-// partial ARN.
-func matchesARN(rec *record, arn string) bool {
-	if rec.ARN == arn {
-		return true
+// lookup loads the secret a request's identifier names, which may be its
+// name, its full ARN or its ARN without the random suffix (see readID). A
+// full ARN names only the secret whose ARN it is exactly, so a secret named
+// <name>-<suffix> can never capture reads by another secret's ARN.
+func (s *Service) lookup(secretID string) (*record, error) {
+	name, how, ok := readID(secretID)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", contracts.ErrSecretNotFound, secretID)
 	}
-	trimmed, ok := trimARNSuffix(rec.ARN)
-	return ok && trimmed == arn
+	rec, err := s.read(name)
+	if err != nil {
+		return nil, err
+	}
+	switch how {
+	case byFullARN:
+		if rec.ARN == secretID {
+			return rec, nil
+		}
+	case byPartialARN:
+		if trimmed, suffixed := trimARNSuffix(rec.ARN); suffixed && trimmed == secretID {
+			return rec, nil
+		}
+	default:
+		return rec, nil
+	}
+	return nil, fmt.Errorf("%w: %s", contracts.ErrSecretNotFound, secretID)
 }
 
 // all loads every stored secret, in name order.

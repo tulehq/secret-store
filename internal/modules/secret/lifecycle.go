@@ -1,10 +1,12 @@
 package secret
 
 import (
+	"context"
 	"time"
 
 	"github.com/gasmod/gas"
 
+	"tule.dev/secret-store/internal/authz"
 	"tule.dev/secret-store/internal/contracts"
 	"tule.dev/secret-store/internal/smapi"
 )
@@ -23,8 +25,32 @@ func (m *Module) createSecret(ctx gas.Context) error {
 	if req.Name == "" {
 		return smapi.ErrInvalidParameter("Name is required.")
 	}
+	if len(req.Name) > maxNameLen {
+		return smapi.ErrTooLong("name", req.Name, maxNameLen)
+	}
+	// A repeated tag key is refused before the request is evaluated, so it
+	// never becomes a multivalued aws:RequestTag.
+	if err = contracts.CheckTagKeys(tagsOf(req.Tags)); err != nil {
+		return err
+	}
+	if err = checkFoldedTagKeys(ctx, req.Tags); err != nil {
+		return err
+	}
+
+	// The ARN is minted first, so the request is authorized on the ARN the
+	// secret will have, random suffix included, as AWS documents a
+	// "secret:<name>-??????" resource granting the creation of a secret
+	// that does not exist yet.
+	arn, err := m.secrets.NewSecretARN(req.Name)
+	if err != nil {
+		return err
+	}
+	if err = m.authorizeCreate(ctx, req, arn); err != nil {
+		return err
+	}
 
 	out, err := m.secrets.CreateSecret(ctx, contracts.CreateSecretInput{
+		ARN:         arn,
 		Name:        req.Name,
 		Description: req.Description,
 		KmsKeyID:    req.KmsKeyID,
@@ -50,8 +76,14 @@ func (m *Module) updateSecret(ctx gas.Context) error {
 	if err = requireSecretID(req.SecretID); err != nil {
 		return err
 	}
+	var keys map[string][]string
+	if req.Description != nil {
+		keys = map[string][]string{"secretsmanager:Description": {*req.Description}}
+	}
+	keys = optional(keys, "secretsmanager:KmsKeyId", deref(req.KmsKeyID))
+	sctx := m.guardSecret(ctx, "UpdateSecret", req.SecretID, keys)
 
-	out, err := m.secrets.UpdateSecret(ctx, contracts.UpdateSecretInput{
+	out, err := m.secrets.UpdateSecret(sctx, contracts.UpdateSecretInput{
 		SecretID:    req.SecretID,
 		Description: req.Description,
 		KmsKeyID:    req.KmsKeyID,
@@ -76,8 +108,9 @@ func (m *Module) describeSecret(ctx gas.Context) error {
 	if err = requireSecretID(req.SecretID); err != nil {
 		return err
 	}
+	sctx := m.guardSecret(ctx, "DescribeSecret", req.SecretID, nil)
 
-	out, err := m.secrets.DescribeSecret(ctx, req.SecretID)
+	out, err := m.secrets.DescribeSecret(sctx, req.SecretID)
 	if err != nil {
 		return err
 	}
@@ -108,8 +141,9 @@ func (m *Module) deleteSecret(ctx gas.Context) error {
 	if err != nil {
 		return err
 	}
+	sctx := m.guardSecret(ctx, "DeleteSecret", req.SecretID, deleteKeys(req))
 
-	out, err := m.secrets.DeleteSecret(ctx, contracts.DeleteSecretInput{
+	out, err := m.secrets.DeleteSecret(sctx, contracts.DeleteSecretInput{
 		SecretID:       req.SecretID,
 		RecoveryWindow: window,
 		Force:          req.ForceDeleteWithoutRecovery,
@@ -152,8 +186,9 @@ func (m *Module) restoreSecret(ctx gas.Context) error {
 	if err = requireSecretID(req.SecretID); err != nil {
 		return err
 	}
+	sctx := m.guardSecret(ctx, "RestoreSecret", req.SecretID, nil)
 
-	out, err := m.secrets.RestoreSecret(ctx, req.SecretID)
+	out, err := m.secrets.RestoreSecret(sctx, req.SecretID)
 	if err != nil {
 		return err
 	}
@@ -169,8 +204,21 @@ func (m *Module) tagResource(ctx gas.Context) error {
 	if err = requireSecretID(req.SecretID); err != nil {
 		return err
 	}
+	if err = contracts.CheckTagKeys(tagsOf(req.Tags)); err != nil {
+		return err
+	}
+	if err = checkFoldedTagKeys(ctx, req.Tags); err != nil {
+		return err
+	}
+	sctx := m.guardSecret(ctx, "TagResource", req.SecretID, authz.TagKeys(req.Tags),
+		func(found *contracts.SecretDetail) error {
+			if found == nil {
+				return nil
+			}
+			return contracts.CheckTagKeysAgainst(tagsOf(req.Tags), found.Tags)
+		})
 
-	if _, err = m.secrets.TagSecret(ctx, req.SecretID, tagsOf(req.Tags)); err != nil {
+	if _, err = m.secrets.TagSecret(sctx, req.SecretID, tagsOf(req.Tags)); err != nil {
 		return err
 	}
 
@@ -186,10 +234,25 @@ func (m *Module) untagResource(ctx gas.Context) error {
 	if err = requireSecretID(req.SecretID); err != nil {
 		return err
 	}
+	var keys map[string][]string
+	if len(req.TagKeys) > 0 {
+		keys = map[string][]string{"aws:TagKeys": req.TagKeys}
+	}
+	sctx := m.guardSecret(ctx, "UntagResource", req.SecretID, keys)
 
-	if _, err = m.secrets.UntagSecret(ctx, req.SecretID, req.TagKeys); err != nil {
+	if _, err = m.secrets.UntagSecret(sctx, req.SecretID, req.TagKeys); err != nil {
 		return err
 	}
 
 	return smapi.Write(ctx, smapi.EmptyResponse{})
+}
+
+// checkFoldedTagKeys refuses, for an evaluated principal, tags whose keys
+// differ only by case, which IAM would read as one key with two values. A
+// root write is not evaluated, and is unchanged.
+func checkFoldedTagKeys(ctx context.Context, tags []smapi.Tag) error {
+	if authz.IsRoot(ctx) {
+		return nil
+	}
+	return contracts.CheckTagKeysFold(tagsOf(tags))
 }

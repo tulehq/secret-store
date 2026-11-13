@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gasmod/gas"
@@ -17,8 +18,11 @@ func (m *Module) getSecretValue(ctx gas.Context) error {
 	if err = requireSecretID(req.SecretID); err != nil {
 		return err
 	}
+	keys := optional(nil, "secretsmanager:VersionId", req.VersionID)
+	keys = optional(keys, "secretsmanager:VersionStage", req.VersionStage)
+	sctx := m.guardSecret(ctx, "GetSecretValue", req.SecretID, keys)
 
-	out, err := m.secrets.GetSecretValue(ctx, contracts.GetSecretValueInput{
+	out, err := m.secrets.GetSecretValue(sctx, contracts.GetSecretValueInput{
 		SecretID:     req.SecretID,
 		VersionID:    req.VersionID,
 		VersionStage: req.VersionStage,
@@ -45,8 +49,9 @@ func (m *Module) putSecretValue(ctx gas.Context) error {
 	if err = requireSecretID(req.SecretID); err != nil {
 		return err
 	}
+	sctx := m.guardSecret(ctx, "PutSecretValue", req.SecretID, nil)
 
-	out, err := m.secrets.PutSecretValue(ctx, contracts.PutSecretValueInput{
+	out, err := m.secrets.PutSecretValue(sctx, contracts.PutSecretValueInput{
 		SecretID:      req.SecretID,
 		VersionID:     req.ClientRequestToken,
 		Payload:       payloadOf(req.SecretString, req.SecretBinary),
@@ -82,12 +87,24 @@ func (m *Module) batchGetSecretValue(ctx gas.Context) error {
 	if len(req.SecretIDList) == 0 {
 		return smapi.ErrInvalidParameter("SecretIdList is required.")
 	}
+	for i, id := range req.SecretIDList {
+		if len(id) > maxSecretIDLen {
+			return smapi.ErrTooLong(fmt.Sprintf("secretIdList.%d.member", i+1), id, maxSecretIDLen)
+		}
+	}
+	if err = m.authorizeAll(ctx, "BatchGetSecretValue"); err != nil {
+		return err
+	}
 
 	res := smapi.BatchGetSecretValueResponse{
 		SecretValues: make([]smapi.BatchSecretValue, 0, len(req.SecretIDList)),
 	}
 	for _, secretID := range req.SecretIDList {
-		out, gErr := m.secrets.GetSecretValue(ctx, contracts.GetSecretValueInput{
+		// Each secret is authorized as its own GetSecretValue, and one that
+		// is denied is reported in Errors like any other that cannot be read.
+		sctx := m.guard(ctx, "BatchGetSecretValue", "secretsmanager:GetSecretValue",
+			secretID, nil)
+		out, gErr := m.secrets.GetSecretValue(sctx, contracts.GetSecretValueInput{
 			SecretID: secretID,
 		})
 		if gErr != nil {
@@ -127,9 +144,11 @@ func (m *Module) updateSecretVersionStage(ctx gas.Context) error {
 		return smapi.ErrInvalidParameter(
 			"One of MoveToVersionId and RemoveFromVersionId is required.")
 	}
+	sctx := m.guardSecret(ctx, "UpdateSecretVersionStage", req.SecretID,
+		map[string][]string{"secretsmanager:VersionStage": {req.VersionStage}})
 
 	out, err := m.secrets.UpdateSecretVersionStage(
-		ctx,
+		sctx,
 		contracts.UpdateSecretVersionStageInput{
 			SecretID:     req.SecretID,
 			VersionStage: req.VersionStage,

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gasmod/gas"
 
@@ -53,11 +55,38 @@ const (
 	TypeInvalidSignature   = "InvalidSignatureException"
 	TypeUnrecognizedClient = "UnrecognizedClientException"
 	TypeExpiredToken       = "ExpiredTokenException"
+	TypeAccessDenied       = "AccessDeniedException"
+	TypeValidation         = "ValidationException"
 )
 
 // ErrResourceNotFound is the error for an identifier that names no secret.
 func ErrResourceNotFound(msg string) *Error {
 	return NewError(http.StatusBadRequest, TypeResourceNotFound, msg)
+}
+
+// ErrAccessDenied is the error for a request no identity-based policy
+// allows, or one explicitly denies. The SDK model does not list it among any
+// operation's errors; the Secrets Manager common errors give it as a 400.
+func ErrAccessDenied(msg string) *Error {
+	return NewError(http.StatusBadRequest, TypeAccessDenied, msg)
+}
+
+// ErrTooLong is the error for a parameter longer than the API model allows,
+// in the form of AWS's model validation errors ("1 validation error
+// detected: Value null at 'secretId' failed to satisfy constraint: Member
+// must not be null", as Secrets Manager answers a missing SecretId). field is
+// the member's name as the model spells it, lowercased first letter.
+//
+// The value is echoed cut to maxLen bytes, with "..." after it: AWS does not
+// document how its messages render a long value, and echoing all of it would
+// return up to the whole request body.
+func ErrTooLong(field, value string, maxLen int) *Error {
+	if len(value) > maxLen {
+		value = strings.ToValidUTF8(value[:maxLen], "") + "..."
+	}
+	return NewError(http.StatusBadRequest, TypeValidation, fmt.Sprintf(
+		"1 validation error detected: Value '%s' at '%s' failed to satisfy constraint: "+
+			"Member must have length less than or equal to %d", value, field, maxLen))
 }
 
 // ErrInvalidParameter is the error for a parameter whose value is not allowed.
@@ -132,6 +161,11 @@ var sentinelErrors = []struct {
 			"it to another version, which would leave the secret with no current value.")},
 	{contracts.ErrValueTooLarge, ErrInvalidParameter(
 		"The secret value must be 65536 bytes or fewer.")},
+	// Secrets Manager's answer to CreateSecret with a repeated tag key, as
+	// aws/aws-emulator-evaluation-suite's
+	// check_tag_resource_fifty_tag_cap_and_duplicate_keys_rejected records
+	// it; TagResource is answered the same way.
+	{contracts.ErrDuplicateTagKeys, ErrInvalidParameter("Duplicate tag keys in request")},
 	{contracts.ErrInvalidToken, NewError(http.StatusBadRequest, TypeInvalidNextToken,
 		"Invalid NextToken.")},
 }

@@ -5,14 +5,12 @@ package secret
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"slices"
 
 	"github.com/gasmod/gas"
 
+	"tule.dev/secret-store/internal/authz"
 	"tule.dev/secret-store/internal/contracts"
 	"tule.dev/secret-store/internal/smapi"
 )
@@ -24,6 +22,7 @@ type Module struct {
 	router   *gas.Router
 	logger   gas.Logger
 	secrets  contracts.SecretsProvider
+	authz    *authz.Authorizer
 	handlers map[string]handler
 }
 
@@ -31,19 +30,28 @@ type Module struct {
 // dispatcher, which renders it as a Secrets Manager error document.
 type handler func(gas.Context) error
 
-// NewModule returns a Module serving from secrets. It registers its route when
-// the app initializes it.
+// NewModule returns a Module serving from secrets, each request authorized by
+// az. It registers its route when the app initializes it.
 func NewModule(
 	router *gas.Router,
 	logger gas.Logger,
 	secrets contracts.SecretsProvider,
+	az *authz.Authorizer,
 ) *Module {
 	m := &Module{
 		router:  router,
 		logger:  logger.With().Str("module", moduleName).Logger(),
 		secrets: secrets,
+		authz:   az,
 	}
-	m.handlers = map[string]handler{
+	m.handlers = m.routes()
+	return m
+}
+
+// routes maps every operation this service serves to its handler. Each one
+// has an entry in authz.Operations, which a test checks.
+func (m *Module) routes() map[string]handler {
+	return map[string]handler{
 		"BatchGetSecretValue":      m.batchGetSecretValue,
 		"CreateSecret":             m.createSecret,
 		"DeleteSecret":             m.deleteSecret,
@@ -58,14 +66,14 @@ func NewModule(
 		"UpdateSecret":             m.updateSecret,
 		"UpdateSecretVersionStage": m.updateSecretVersionStage,
 	}
-	return m
 }
 
 // unserved are the Secrets Manager operations this service knows of and
-// answers with 501. Most of them need something a local stand-in has no
-// business faking -- KMS, Lambda rotation, IAM policy evaluation or
-// cross-region replication -- and GetRandomPassword is left out because
-// standing in for Secrets Manager does not require inventing passwords.
+// answers with 501, whoever calls, without evaluating any policy. Most of
+// them need something a local stand-in has no business faking -- KMS, Lambda
+// rotation, resource-based policy evaluation or cross-region replication --
+// and GetRandomPassword is left out because standing in for Secrets Manager
+// does not require inventing passwords.
 var unserved = []string{
 	"CancelRotateSecret",
 	"DeleteResourcePolicy",
@@ -116,28 +124,30 @@ func (m *Module) dispatch(ctx gas.Context) error {
 	}
 }
 
-// decode reads a request body into T. An empty body decodes to the zero value,
-// and unknown fields are ignored, as the AWS JSON protocol expects.
-func decode[T any](ctx gas.Context) (T, error) {
-	var body T
-	err := json.NewDecoder(ctx.Request().Body).Decode(&body)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return body, smapi.ErrSerialization("The request body is not valid JSON.")
-	}
-	return body, nil
-}
-
 // payloadOf builds the value a write stores from the two fields that may carry
 // one.
 func payloadOf(secretString *string, secretBinary []byte) contracts.Payload {
 	return contracts.Payload{String: secretString, Binary: secretBinary}
 }
 
-// requireSecretID rejects a request that names no secret. The SDKs check this
+// The longest SecretId and Name the Secrets Manager API reference allows
+// (GetSecretValue, CreateSecret). A longer one is refused before anything is
+// evaluated: matching a policy costs the pattern's length times the
+// resource's, so an unbounded identifier would be a CPU lever.
+const (
+	maxSecretIDLen = 2048
+	maxNameLen     = 512
+)
+
+// requireSecretID rejects a request that names no secret, or one whose
+// SecretId is longer than the API allows. The SDKs check the first
 // themselves, so it only catches hand-built requests.
 func requireSecretID(secretID string) error {
 	if secretID == "" {
 		return smapi.ErrInvalidParameter("SecretId is required.")
+	}
+	if len(secretID) > maxSecretIDLen {
+		return smapi.ErrTooLong("secretId", secretID, maxSecretIDLen)
 	}
 	return nil
 }

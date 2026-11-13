@@ -13,13 +13,13 @@ import (
 // names by version ID, or the one carrying the requested staging label, which
 // defaults to AWSCURRENT.
 func (s *Service) GetSecretValue(
-	_ context.Context,
+	ctx context.Context,
 	in contracts.GetSecretValueInput,
 ) (*contracts.SecretValue, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rec, err := s.resolveLive(in.SecretID)
+	rec, err := s.resolveLive(ctx, in.SecretID)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,7 @@ func (s *Service) touchAccessed(rec *record) error {
 // write and returns the stored version, which is what makes a client request
 // token safe to retry; reusing one with a different value is an error.
 func (s *Service) PutSecretValue(
-	_ context.Context,
+	ctx context.Context,
 	in contracts.PutSecretValueInput,
 ) (*contracts.SecretVersion, error) {
 	if err := checkPayload(in.Payload); err != nil {
@@ -103,7 +103,7 @@ func (s *Service) PutSecretValue(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rec, err := s.resolveLive(in.SecretID)
+	rec, err := s.resolveLive(ctx, in.SecretID)
 	if err != nil {
 		return nil, err
 	}
@@ -212,13 +212,13 @@ func (s *Service) appendVersion(
 // another version can only be moved by a request that names the version it
 // comes off, and that version must be the one holding it.
 func (s *Service) UpdateSecretVersionStage(
-	_ context.Context,
+	ctx context.Context,
 	in contracts.UpdateSecretVersionStageInput,
 ) (*contracts.SecretRef, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rec, err := s.resolveLive(in.SecretID)
+	rec, err := s.resolveLive(ctx, in.SecretID)
 	if err != nil {
 		return nil, err
 	}
@@ -287,8 +287,8 @@ func checkStageMove(rec *record, in contracts.UpdateSecretVersionStageInput) err
 
 // resolveLive loads a secret and refuses one that is scheduled for deletion,
 // which is what every operation but DescribeSecret and RestoreSecret does.
-func (s *Service) resolveLive(secretID string) (*record, error) {
-	rec, err := s.resolve(secretID)
+func (s *Service) resolveLive(ctx context.Context, secretID string) (*record, error) {
+	rec, err := s.resolve(ctx, secretID)
 	if err != nil {
 		return nil, err
 	}

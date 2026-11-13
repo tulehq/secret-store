@@ -62,15 +62,34 @@ func fileName(name string) string {
 	return path.Join(secretsDir, hex.EncodeToString(sum[:])+".json")
 }
 
-// mintARN returns the ARN of a new secret: its name with a fresh random
-// suffix, in the configured region and account.
-func (s *Service) mintARN(name string) (string, error) {
+// NewSecretARN returns an ARN for a new secret: its name with a fresh random
+// suffix, in the configured region and account. Nothing is stored; passed
+// to CreateSecret, it becomes the secret's ARN.
+func (s *Service) NewSecretARN(name string) (string, error) {
 	suffix, err := randomSuffix()
 	if err != nil {
 		return "", err
 	}
-	return arnPrefix + s.settings.Region + ":" + s.settings.AccountID +
-		":secret:" + name + "-" + suffix, nil
+	return s.secretARNBase(name) + "-" + suffix, nil
+}
+
+// secretARNBase is the ARN of the secret name without its random suffix.
+func (s *Service) secretARNBase(name string) string {
+	return arnPrefix + s.settings.Region + ":" + s.settings.AccountID + ":secret:" + name
+}
+
+// newARN returns the ARN CreateSecret gives the secret in: the one the input
+// carries, which must be one NewSecretARN could have returned for its name,
+// or a fresh one.
+func (s *Service) newARN(in contracts.CreateSecretInput) (string, error) {
+	if in.ARN == "" {
+		return s.NewSecretARN(in.Name)
+	}
+	base, ok := trimARNSuffix(in.ARN)
+	if !ok || base != s.secretARNBase(in.Name) {
+		return "", fmt.Errorf("secrets: ARN %q is not one minted for the name %q", in.ARN, in.Name)
+	}
+	return in.ARN, nil
 }
 
 func randomSuffix() (string, error) {
@@ -84,26 +103,39 @@ func randomSuffix() (string, error) {
 	return string(buf), nil
 }
 
-// candidateNames returns the names a secret identifier may refer to, in the
-// order they should be tried. A plain name refers to itself. An ARN refers to
-// the name in its last segment, either whole (a partial ARN, which Secrets
-// Manager also accepts) or without its random suffix (a full ARN) -- both,
-// because a name may itself end in something shaped like a suffix.
-func candidateNames(secretID string) []string {
+// idReading is how a secret identifier names a secret.
+type idReading int
+
+const (
+	// byName: the identifier is the secret's name.
+	byName idReading = iota
+	// byFullARN: the identifier is exactly the secret's ARN.
+	byFullARN
+	// byPartialARN: the identifier is the secret's ARN without its suffix.
+	byPartialARN
+)
+
+// readID returns the name a secret identifier refers to and how it refers
+// to it, or ok false for an ARN with no secret name. A plain name refers to
+// itself. An ARN whose last segment ends in a hyphen and six suffix
+// characters is a full ARN, of the secret named the segment without them,
+// and nothing else: Secrets Manager reads such an ARN as a full ARN, and
+// says a partial ARN of a name shaped like that "might not" be found ("An
+// AWS CLI or AWS SDK operation can't find my secret from a partial ARN",
+// Secrets Manager User Guide, Troubleshooting). Any other ARN is a partial
+// ARN of the secret named its last segment.
+func readID(secretID string) (name string, how idReading, ok bool) {
 	if !strings.HasPrefix(secretID, arnPrefix) {
-		return []string{secretID}
+		return secretID, byName, true
 	}
-
-	_, last, ok := strings.Cut(secretID, ":secret:")
-	if !ok || last == "" {
-		return nil
+	_, last, found := strings.Cut(secretID, ":secret:")
+	if !found || last == "" {
+		return "", 0, false
 	}
-
-	names := []string{last}
-	if trimmed, found := trimARNSuffix(last); found {
-		names = append(names, trimmed)
+	if trimmed, suffixed := trimARNSuffix(last); suffixed {
+		return trimmed, byFullARN, true
 	}
-	return names
+	return last, byPartialARN, true
 }
 
 // trimARNSuffix removes a trailing "-" plus arnSuffixLen suffix characters,

@@ -54,7 +54,7 @@ func (s *Service) ListSecrets(
 
 // ListSecretVersions pages through one secret's versions, newest first.
 func (s *Service) ListSecretVersions(
-	_ context.Context,
+	ctx context.Context,
 	in contracts.ListSecretVersionsInput,
 ) (*contracts.ListSecretVersionsOutput, error) {
 	after, err := decodeToken(in.NextToken)
@@ -65,7 +65,7 @@ func (s *Service) ListSecretVersions(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rec, err := s.resolveLive(in.SecretID)
+	rec, err := s.resolveLive(ctx, in.SecretID)
 	if err != nil {
 		return nil, err
 	}
