@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,11 @@ var now = time.Now
 //   - aws:PrincipalTag/<key> for each of the principal's tags, as identity
 //     reports them: a user's, or a session's role's. Their keys are unique
 //     regardless of case.
+//   - aws:PrincipalOrgID and aws:PrincipalOrgPaths, the organization of the
+//     principal's account and its path in it, when identity reports them:
+//     AWS includes them only for a principal whose account is in an
+//     organization. When identity could not tell (p.OrgUnknown) neither is
+//     set here: orgUnknown names both as unknown to the evaluator instead.
 //
 // aws:PrincipalArn (a role session's role ARN with its path), aws:userid,
 // aws:username, aws:PrincipalType and aws:PrincipalAccount are not set here:
@@ -37,7 +43,7 @@ var now = time.Now
 // the context gives.
 func globalKeys(r *http.Request, p sigv4.Principal, region string) map[string][]string {
 	t := now().UTC()
-	keys := make(map[string][]string, 5+len(p.Tags))
+	keys := make(map[string][]string, 7+len(p.Tags))
 	keys["aws:RequestedRegion"] = []string{region}
 	keys["aws:CurrentTime"] = []string{t.Format(time.RFC3339)}
 	keys["aws:EpochTime"] = []string{strconv.FormatInt(t.Unix(), 10)}
@@ -48,7 +54,24 @@ func globalKeys(r *http.Request, p sigv4.Principal, region string) map[string][]
 	for k, v := range p.Tags {
 		keys["aws:PrincipalTag/"+k] = []string{v}
 	}
+	if p.OrgID != "" {
+		keys["aws:PrincipalOrgID"] = []string{p.OrgID}
+		keys["aws:PrincipalOrgPaths"] = slices.Clone(p.OrgPaths)
+	}
 	return keys
+}
+
+// orgUnknown returns the keys of p that are unknown to the evaluator: the
+// organization keys when identity could not ask the accounts service
+// (p.OrgUnknown). They are never passed as absent, since an absent key
+// satisfies a negated operator, so a StringNotEquals on aws:PrincipalOrgID
+// would grant, or let a Deny lapse, for a principal whose organization is
+// not known.
+func orgUnknown(p sigv4.Principal) []string {
+	if !p.OrgUnknown {
+		return nil
+	}
+	return []string{"aws:PrincipalOrgID", "aws:PrincipalOrgPaths"}
 }
 
 // The bounds of the condition context one check evaluates. tule.dev/policy's
