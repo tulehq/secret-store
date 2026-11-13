@@ -18,82 +18,37 @@ import (
 var now = time.Now
 
 // globalKeys returns the global condition keys ("AWS global condition context
-// keys", IAM User Guide) the service knows for r, signed by p:
+// keys", IAM User Guide) the service supplies for r, signed by p:
 //
 //   - aws:SourceIp, the address the connection came from. No forwarding
 //     header is trusted, since nothing is expected in front of the service.
 //   - aws:CurrentTime and aws:EpochTime, when the request was evaluated.
 //   - aws:SecureTransport, whether the request came over TLS.
-//   - aws:PrincipalAccount, the principal's account.
-//   - aws:PrincipalArn: an IAM user's ARN, or for a role session the role's
-//     ARN, arn:aws:iam::<account>:role/<name>. A role's path is not known to
-//     the service, since identity reports only the session's ARN, so the
-//     value has none, unlike AWS's.
-//   - aws:username, an IAM user's name.
 //   - aws:RequestedRegion, region, the store's own. On AWS the endpoint
 //     fixes the region; here any signed region verifies, so the credential
 //     scope's region is the caller's to choose and is never used.
+//   - aws:PrincipalTag/<key> for each of the principal's tags, as identity
+//     reports them: a user's, or a session's role's. Their keys are unique
+//     regardless of case.
 //
-// aws:userid is not supplied: for a user or role it is a unique ID identity
-// does not report.
+// aws:PrincipalArn (a role session's role ARN with its path), aws:userid,
+// aws:username, aws:PrincipalType and aws:PrincipalAccount are not set here:
+// policy.Authorize supplies them from the principal's Caller, over any value
+// the context gives.
 func globalKeys(r *http.Request, p sigv4.Principal, region string) map[string][]string {
 	t := now().UTC()
-	keys := map[string][]string{
-		"aws:RequestedRegion": {region},
-		"aws:CurrentTime":     {t.Format(time.RFC3339)},
-		"aws:EpochTime":       {strconv.FormatInt(t.Unix(), 10)},
-		"aws:SecureTransport": {strconv.FormatBool(r.TLS != nil)},
-	}
+	keys := make(map[string][]string, 5+len(p.Tags))
+	keys["aws:RequestedRegion"] = []string{region}
+	keys["aws:CurrentTime"] = []string{t.Format(time.RFC3339)}
+	keys["aws:EpochTime"] = []string{strconv.FormatInt(t.Unix(), 10)}
+	keys["aws:SecureTransport"] = []string{strconv.FormatBool(r.TLS != nil)}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		keys["aws:SourceIp"] = []string{host}
 	}
-	if p.AccountID != "" {
-		keys["aws:PrincipalAccount"] = []string{p.AccountID}
-	}
-	if arn, ok := principalARN(p.ARN); ok {
-		keys["aws:PrincipalArn"] = []string{arn}
-	}
-	if name, ok := userName(p.ARN); ok {
-		keys["aws:username"] = []string{name}
+	for k, v := range p.Tags {
+		keys["aws:PrincipalTag/"+k] = []string{v}
 	}
 	return keys
-}
-
-// principalARN is aws:PrincipalArn for the caller arn: the role's ARN, without
-// its path, for an assumed-role session
-// (arn:<partition>:sts::<account>:assumed-role/<role>/<session>), and arn
-// itself otherwise.
-func principalARN(arn string) (string, bool) {
-	fields := strings.SplitN(arn, ":", 6)
-	if len(fields) != 6 || fields[0] != "arn" {
-		return "", false
-	}
-	if fields[2] != "sts" {
-		return arn, true
-	}
-	rest, ok := strings.CutPrefix(fields[5], "assumed-role/")
-	if !ok {
-		return "", false
-	}
-	role, _, ok := strings.Cut(rest, "/")
-	if !ok || role == "" {
-		return "", false
-	}
-	return "arn:" + fields[1] + ":iam::" + fields[4] + ":role/" + role, true
-}
-
-// userName is aws:username for an IAM user's ARN: the last element of its
-// path and name.
-func userName(arn string) (string, bool) {
-	fields := strings.SplitN(arn, ":", 6)
-	if len(fields) != 6 || fields[0] != "arn" || fields[2] != "iam" {
-		return "", false
-	}
-	path, ok := strings.CutPrefix(fields[5], "user/")
-	if !ok {
-		return "", false
-	}
-	return path[strings.LastIndexByte(path, '/')+1:], true
 }
 
 // The bounds of the condition context one check evaluates. tule.dev/policy's

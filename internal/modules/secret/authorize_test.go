@@ -60,7 +60,10 @@ func moduleFor(
 ) (*Module, context.Context) {
 	t.Helper()
 	az := authz.New("us-east-1", "000000000000")
-	p := sigv4.Principal{AccountID: "000000000000", ARN: devARN}
+	p := sigv4.Principal{
+		AccountID: "000000000000", ARN: devARN, PrincipalARN: devARN,
+		UserID: "AIDAEXAMPLEDEV00001", Type: sigv4.PrincipalTypeUser,
+	}
 	for _, d := range docs {
 		p.Policies = append(p.Policies, json.RawMessage(d))
 	}
