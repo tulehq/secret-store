@@ -1,11 +1,14 @@
 package secret
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"unicode/utf8"
 
 	"github.com/gasmod/gas"
+	"tule.dev/identity/principals"
 
 	"tule.dev/secret-store/internal/authz"
 	"tule.dev/secret-store/internal/smapi"
@@ -55,7 +58,11 @@ func (m *Module) putResourcePolicy(ctx gas.Context) error {
 	}
 
 	sctx := m.guardSecret(ctx, "PutResourcePolicy", req.SecretID, putKeys(req))
-	out, err := m.secrets.PutResourcePolicy(sctx, req.SecretID, doc)
+	bound, err := m.bindFor(ctx, sctx, req.SecretID, doc)
+	if err != nil {
+		return err
+	}
+	out, err := m.secrets.PutResourcePolicy(sctx, req.SecretID, bound)
 	if err != nil {
 		return err
 	}
@@ -63,6 +70,19 @@ func (m *Module) putResourcePolicy(ctx gas.Context) error {
 		SecretRefResponse: secretRef(*out),
 		PolicyName:        defaultPolicyName,
 	})
+}
+
+// bindFor returns doc bound (bindPolicy) for PutResourcePolicy on secretID,
+// once sctx's check allows it. The check runs first, on its own, so that
+// only a caller allowed to attach the policy learns whether the principals
+// it names exist, and identity is not asked while the store is locked. The
+// store runs the check again under its lock when it stores the policy, on
+// the secret it acts on.
+func (m *Module) bindFor(ctx, sctx context.Context, secretID, doc string) (string, error) {
+	if _, err := m.secrets.GetResourcePolicy(sctx, secretID); err != nil {
+		return "", err
+	}
+	return m.bindPolicy(ctx, doc)
 }
 
 // putKeys returns PutResourcePolicy's own keys: secretsmanager:PolicyName
@@ -110,8 +130,12 @@ func (m *Module) getResourcePolicy(ctx gas.Context) error {
 	}
 	res := smapi.ResourcePolicyResponse{SecretRefResponse: secretRef(out.SecretRef)}
 	if out.Policy != "" {
+		shown, err := m.principals.Show(ctx, out.Policy)
+		if err != nil {
+			return fmt.Errorf("show the resource policy of %s: %w", out.Name, err)
+		}
 		res.PolicyName = defaultPolicyName
-		res.ResourcePolicy = out.Policy
+		res.ResourcePolicy = shown
 	}
 	return smapi.Write(ctx, res)
 }
@@ -139,9 +163,10 @@ func (m *Module) deleteResourcePolicy(ctx gas.Context) error {
 	})
 }
 
-// validateResourcePolicy checks a policy without storing it: its syntax,
-// answered MalformedPolicyDocumentException as PutResourcePolicy answers it,
-// and broad access, answered in ValidationErrors. Secrets Manager also
+// validateResourcePolicy checks a policy without storing it: its syntax and
+// its principals, a user or role ARN that no user or role has, answered
+// MalformedPolicyDocumentException as PutResourcePolicy answers them, and
+// broad access, answered in ValidationErrors. Secrets Manager also
 // "Verifies the policy does not lock out a caller", a check this service
 // does not make. With a SecretId the secret must exist and not be scheduled
 // for deletion, and the caller is checked on it, with its stored policy;
@@ -164,6 +189,9 @@ func (m *Module) validateResourcePolicy(ctx gas.Context) error {
 	}
 
 	if err = m.authorizeValidate(ctx, req.SecretID); err != nil {
+		return err
+	}
+	if _, err = m.bindPolicy(ctx, doc); err != nil {
 		return err
 	}
 
@@ -229,6 +257,34 @@ func (m *Module) requirePolicy(doc *string) (string, error) {
 		return "", err
 	}
 	return *doc, nil
+}
+
+// invalidPrincipal is the message of the MalformedPolicyDocumentException
+// for a policy naming a user or role ARN that no user or role has. Secrets
+// Manager documents the exception ("The resource policy has syntax errors.")
+// but not this message; it is the one IAM and S3 give for the same policy.
+const invalidPrincipal = "Invalid principal in policy"
+
+// bindPolicy returns doc, a policy requirePolicy accepted, bound by
+// m.principals: each user and role ARN in its principals replaced by the
+// principal's unique ID, as AWS stores it. A user or role ARN that no user or
+// role has is MalformedPolicyDocumentException; failing to ask identity is an
+// internal error, so the policy is never stored unbound. The bound document
+// is parsed as the one checks will evaluate.
+func (m *Module) bindPolicy(ctx context.Context, doc string) (string, error) {
+	bound, err := m.principals.Bind(ctx, doc)
+	if errors.Is(err, principals.ErrInvalidPrincipal) {
+		return "", smapi.ErrMalformedPolicy(invalidPrincipal)
+	}
+	if err != nil {
+		return "", fmt.Errorf("bind the principals of the resource policy: %w", err)
+	}
+	if err = m.authz.ParseResourcePolicy(bound); err != nil {
+		// Not wrapped: the binding is at fault, not the request, so this is
+		// an internal error rather than the request's MalformedPolicy.
+		return "", fmt.Errorf("the bound resource policy does not parse: %s", err.Error())
+	}
+	return bound, nil
 }
 
 // checkPolicyName refuses a PolicyName that breaks the model's constraints,
