@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"tule.dev/secret-store/internal/authz"
 	"tule.dev/secret-store/internal/contracts"
@@ -106,6 +107,10 @@ func (m *Module) checkSecret(
 	keys map[string][]string,
 	found *contracts.SecretDetail,
 ) error {
+	if account, foreign := m.authz.ForeignAccount(ctx); foreign &&
+		!strings.HasPrefix(secretID, "arn:") {
+		return m.checkForeignName(ctx, op, action, secretID, account, keys)
+	}
 	arn, tags, err := m.secretFacts(secretID, found)
 	if err != nil {
 		return err
@@ -125,6 +130,39 @@ func (m *Module) checkSecret(
 		req.Policy = found.ResourcePolicy
 	}
 	return m.authz.Check(ctx, req)
+}
+
+// checkForeignName answers a principal of another account that names a
+// secret by name rather than ARN. Secrets Manager reads a name in the
+// caller's own account ("To retrieve a secret from another account, you must
+// use an ARN.", GetSecretValue SecretId, API reference), and the store holds
+// no secret of that account, so the request is checked as on a missing
+// secret there, arn:aws:secretsmanager:<region>:<caller's account>:secret:<name>,
+// with no resource policy, and an allowed one is answered
+// ResourceNotFoundException. The store's own secret of that name, if any, is
+// never looked at: neither its policy nor its existence decides the answer.
+func (m *Module) checkForeignName(
+	ctx context.Context,
+	op, action, secretID, account string,
+	keys map[string][]string,
+) error {
+	arn := m.authz.SecretARNIn(account, secretID)
+	all := m.authz.SecretKeys(arn, nil)
+	for k, v := range keys {
+		all[k] = v
+	}
+	err := m.authz.Check(ctx, authz.Request{
+		Operation:      op,
+		Action:         action,
+		Resource:       arn,
+		Shown:          secretID,
+		Keys:           all,
+		CallersAccount: true,
+	})
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %s in account %s", contracts.ErrSecretNotFound, secretID, account)
 }
 
 // secretFacts returns the ARN and tags of detail, the secret the store
