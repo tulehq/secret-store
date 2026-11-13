@@ -6,13 +6,13 @@ import (
 	"fmt"
 
 	"github.com/gasmod/gas"
+	"tule.dev/sigv4"
 
 	"tule.dev/secret-store/internal/contracts"
 	"tule.dev/secret-store/internal/httpx"
 	"tule.dev/secret-store/internal/modules/health"
 	"tule.dev/secret-store/internal/modules/secret"
 	"tule.dev/secret-store/internal/services/secrets/dirimpl"
-	"tule.dev/secret-store/internal/sigv4"
 )
 
 // New builds the application from cfg. extra options are applied after the
@@ -29,10 +29,15 @@ func New(cfg *Config, extra ...gas.Option) (*gas.App, error) {
 	opts := append([]gas.Option{gas.WithCSRFInsecureBypassPattern("/")}, extra...)
 	app := gas.NewApp(opts...)
 
+	verifier, vErr := newVerifier(cfg.Auth, cfg.Store.AccountID)
+	if vErr != nil {
+		return nil, vErr
+	}
+
 	registerInfraServices(app, cfg, logger)
 	registerAppServices(app, cfg)
 	registerAppModules(app)
-	installMiddleware(app.Router(), cfg, logger)
+	installMiddleware(app.Router(), cfg, logger, verifier)
 	app.ReadyFunc(seedSecrets(cfg.Store.Seed))
 
 	return app, nil
@@ -53,7 +58,7 @@ func registerAppModules(app *gas.App) {
 	app.RegisterSingletonService[*health.Module](health.NewModule)
 }
 
-func installMiddleware(r *gas.Router, cfg *Config, logger gas.Logger) {
+func installMiddleware(r *gas.Router, cfg *Config, logger gas.Logger, v *sigv4.Verifier) {
 	r.UseMiddlewareFunc(nil, httpx.RequestID(cfg.Env))
 
 	// No X-Forwarded-For handling: nothing is expected in front of this
@@ -64,10 +69,7 @@ func installMiddleware(r *gas.Router, cfg *Config, logger gas.Logger) {
 
 	r.UseMiddlewareFunc(nil, gas.RequestLogger[httpx.RequestLogger]())
 
-	r.UseMiddlewareFunc(nil, verifySignature(sigv4.NewVerifier(sigv4.Credentials{
-		AccessKeyID:     cfg.Auth.AccessKeyID,
-		SecretAccessKey: cfg.Auth.SecretAccessKey,
-	})))
+	r.UseMiddlewareFunc(nil, verifySignature(v))
 
 	var hsts string
 	if cfg.HSTS != nil && cfg.HSTS.MaxAge > 0 {

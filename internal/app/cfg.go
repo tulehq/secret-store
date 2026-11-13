@@ -112,7 +112,7 @@ func applyDefaults(store gas.ConfigProvider) error {
 
 	// The server timeouts are set here rather than left to the gas defaults
 	// (5s read, 10s write), which are too short for this service's requests.
-	// A signed request body may be up to sigv4.MaxBodySize, 1 MiB, and the
+	// A signed request body may be up to maxRequestBody, 1 MiB, and the
 	// signature covers the whole body: a read cut short mid-body surfaces to
 	// the client as a signature failure or a broken connection rather than as
 	// a timeout, which is a confusing way to lose a 64 KiB secret over a slow
