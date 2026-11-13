@@ -145,3 +145,38 @@ func TestAnUnreachableIdentityFailsClosed(t *testing.T) {
 		t.Fatalf("the configured key: %v", err)
 	}
 }
+
+func TestAHungIdentityFailsClosed(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	saved := identityTimeout
+	identityTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { identityTimeout = saved })
+
+	v, err := newVerifier(&authSettings{
+		AccessKeyID: "AKID", SecretAccessKey: "secret", IdentityEndpoint: srv.URL,
+	}, "000000000000")
+	if err != nil {
+		t.Fatalf("new verifier: %v", err)
+	}
+
+	// identity never answers: the lookup times out, which is the server's
+	// failure, not an unknown key and not a success.
+	start := time.Now()
+	got := answer(t, v, signedRequest(t, aws.Credentials{
+		AccessKeyID:     "AKIAEXAMPLEEXAMPLE00",
+		SecretAccessKey: "secret",
+	}))
+	if got.Status != http.StatusInternalServerError || got.Type != smapi.TypeInternalService {
+		t.Fatalf("answered %d %s, want %d %s", got.Status, got.Type,
+			http.StatusInternalServerError, smapi.TypeInternalService)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the lookup took %v, want about the 100ms timeout", elapsed)
+	}
+}

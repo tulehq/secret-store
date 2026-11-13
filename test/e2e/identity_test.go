@@ -298,15 +298,16 @@ func readSecret(c *awssm.Client, name string) error {
 	return err //nolint:wrapcheck // the SDK's error is what the test checks
 }
 
-// requireRefused fails unless err is a 403 with the given code and message.
-func requireRefused(t *testing.T, err error, code, message string) {
+// requireUnrecognized fails unless err is a 403 UnrecognizedClientException
+// with AWS's message for a key or token it does not recognize.
+func requireUnrecognized(t *testing.T, err error) {
 	t.Helper()
 
-	requireCode(t, err, code)
+	requireCode(t, err, "UnrecognizedClientException")
 	requireResponse(t, err, http.StatusForbidden)
 	var apiErr smithy.APIError
 	errors.As(err, &apiErr) // requireCode has checked it is one
-	requireEqual(t, apiErr.ErrorMessage(), message, "error message")
+	requireEqual(t, apiErr.ErrorMessage(), msgInvalidToken, "error message")
 }
 
 // msgInvalidToken is AWS's message for an access key or session token it
@@ -338,7 +339,7 @@ func TestAnIdentityUserKeyIsAcceptedUntilItIsDeactivatedOrDeleted(t *testing.T) 
 	})
 	requireNoErr(t, err, "deactivate the user's key")
 	err = readSecret(user, "example/from-user")
-	requireRefused(t, err, "UnrecognizedClientException", msgInvalidToken)
+	requireUnrecognized(t, err)
 	requireEqual(t, getSecretString(t, root, "example/from-user"), "placeholder",
 		"root read after deactivation")
 
@@ -348,7 +349,7 @@ func TestAnIdentityUserKeyIsAcceptedUntilItIsDeactivatedOrDeleted(t *testing.T) 
 	})
 	requireNoErr(t, err, "delete the user's key")
 	err = readSecret(user, "example/from-user")
-	requireRefused(t, err, "UnrecognizedClientException", msgInvalidToken)
+	requireUnrecognized(t, err)
 	requireEqual(t, getSecretString(t, root, "example/from-user"), "placeholder",
 		"root read after deletion")
 }
@@ -402,10 +403,19 @@ func TestAnAssumedRoleSessionIsAccepted(t *testing.T) {
 	tampered := session
 	tampered.SessionToken = tamper(session.SessionToken)
 	err = readSecret(smFor(srv, tampered), "example/from-session")
-	requireRefused(t, err, "UnrecognizedClientException", msgInvalidToken)
+	requireUnrecognized(t, err)
+
+	// A session's key without its token is unknown, as on AWS.
+	if !strings.HasPrefix(session.AccessKeyID, "ASIA") {
+		t.Fatalf("session key %s is not a temporary key", session.AccessKeyID)
+	}
+	untokened := session
+	untokened.SessionToken = ""
+	err = readSecret(smFor(srv, untokened), "example/from-session")
+	requireUnrecognized(t, err)
 
 	requireEqual(t, getSecretString(t, sc, "example/from-session"), "placeholder",
-		"session read after the tampered one")
+		"session read after the refused ones")
 }
 
 func TestIdentityGoingDownFailsClosed(t *testing.T) {
