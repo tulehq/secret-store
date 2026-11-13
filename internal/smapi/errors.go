@@ -52,6 +52,7 @@ const (
 	TypeIncompleteSig      = "IncompleteSignatureException"
 	TypeInvalidSignature   = "InvalidSignatureException"
 	TypeUnrecognizedClient = "UnrecognizedClientException"
+	TypeExpiredToken       = "ExpiredTokenException"
 )
 
 // ErrResourceNotFound is the error for an identifier that names no secret.
