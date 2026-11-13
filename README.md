@@ -201,7 +201,9 @@ the version already stored, and reusing one with a different value is a
   key and a 15-minute clock skew. There are no presigned URLs in this
   protocol. A request body larger than 1 MiB is refused. A signature must
   cover `host`, `x-amz-date`, `x-amz-target` and every other `x-amz-*` header
-  the request carries, and must carry a real SHA-256 of the body: `UNSIGNED-PAYLOAD` is rejected, since it would leave the body
+  the request carries, its `SignedHeaders` must be as SigV4 specifies them
+  (lowercase, sorted and unique), and it must carry a real SHA-256 of the
+  body: `UNSIGNED-PAYLOAD` is rejected, since it would leave the body
   outside the signature and let a relay swap one operation's body for
   another's.
 - **Writes are not fsynced.** Each change is written to a temporary file and
