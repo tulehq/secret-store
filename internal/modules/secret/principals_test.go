@@ -37,7 +37,9 @@ func grantTo(arn string) string {
 // fakePrincipals binds devARN to devID and shows devID as devARN, refuses
 // goneARN, and records what it returned. fail makes every call fail.
 type fakePrincipals struct {
-	fail  error
+	fail error
+	// id, when set, is what devARN is bound to in place of devID.
+	id    string
 	bound []string
 	binds int
 	shows int
@@ -54,7 +56,11 @@ func (f *fakePrincipals) Bind(_ context.Context, doc string) (string, error) {
 	if strings.Contains(doc, goneARN) {
 		return "", &principals.InvalidPrincipalError{ARN: goneARN}
 	}
-	out := strings.ReplaceAll(doc, devARN, devID)
+	id := devID
+	if f.id != "" {
+		id = f.id
+	}
+	out := strings.ReplaceAll(doc, devARN, id)
 	f.bound = append(f.bound, out)
 	return out, nil
 }
@@ -277,5 +283,47 @@ func TestADeniedCallerLearnsNothingOfPrincipals(t *testing.T) {
 	}
 	if fake.binds != 0 {
 		t.Fatalf("Bind was called %d times", fake.binds)
+	}
+}
+
+// TestABoundPolicyIsHeldToTheLengthLimit checks the bound document, not only
+// the one sent, is at most maxPolicyLen characters: a unique ID, up to 128
+// characters, can be longer than the ARN it replaces.
+func TestABoundPolicyIsHeldToTheLengthLimit(t *testing.T) {
+	longID := "AIDA" + strings.Repeat("X", 124)
+	padded := func(n int) string {
+		return `{"Version":"2012-10-17","Statement":{"Effect":"Allow",` +
+			`"Principal":{"AWS":"` + devARN + `"},"Action":"secretsmanager:GetSecretValue",` +
+			`"Resource":"*","Condition":{"StringEquals":{"aws:SourceVpce":"` +
+			strings.Repeat("v", n) + `"}}}}`
+	}
+	// The longest document whose binding still fits, and one more.
+	grow := len(longID) - len(devARN)
+	fits := padded(maxPolicyLen - grow - len(padded(0)))
+	over := padded(maxPolicyLen - grow - len(padded(0)) + 1)
+	if len(fits) > maxPolicyLen || len(over) > maxPolicyLen {
+		t.Fatal("the documents sent must fit themselves")
+	}
+
+	m, store, fake, ctx := boundModule(t, rootPrincipal())
+	fake.id = longID
+	body := everyMember()
+	body["ResourcePolicy"] = over
+	w := call(ctx, m, "PutResourcePolicy", body)
+	if w.Code != http.StatusBadRequest ||
+		w.Header().Get("X-Amzn-Errortype") != smapi.TypeValidation {
+		t.Fatalf("over: got %d %s", w.Code, w.Body.String())
+	}
+	if len(store.stored) != 0 {
+		t.Fatalf("stored %d policies", len(store.stored))
+	}
+
+	body["ResourcePolicy"] = fits
+	if w = call(ctx, m, "PutResourcePolicy", body); w.Code != http.StatusOK {
+		t.Fatalf("fits: got %d %s", w.Code, w.Body.String())
+	}
+	if len(store.stored) != 1 || len(store.stored[0]) != maxPolicyLen {
+		t.Fatalf("stored %d policies, want one of %d characters", len(store.stored),
+			maxPolicyLen)
 	}
 }
