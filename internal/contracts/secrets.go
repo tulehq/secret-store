@@ -195,6 +195,15 @@ type SecretsProvider interface {
 	) (*SecretRef, error)
 	TagSecret(ctx context.Context, secretID string, tags []Tag) (*SecretRef, error)
 	UntagSecret(ctx context.Context, secretID string, keys []string) (*SecretRef, error)
+	// PutResourcePolicy attaches doc, which the caller has validated, as the
+	// secret's resource policy, replacing the one it has.
+	PutResourcePolicy(ctx context.Context, secretID, doc string) (*SecretRef, error)
+	// GetResourcePolicy returns the secret's resource policy, empty when it
+	// has none.
+	GetResourcePolicy(ctx context.Context, secretID string) (*SecretPolicy, error)
+	// DeleteResourcePolicy removes the secret's resource policy. A secret
+	// without one is not an error.
+	DeleteResourcePolicy(ctx context.Context, secretID string) (*SecretRef, error)
 }
 
 // Payload is one version's value. Secrets Manager stores either a string or
@@ -277,7 +286,17 @@ type SecretDetail struct {
 	SecretRef
 	Description string
 	KmsKeyID    string
-	Tags        []Tag
+	// ResourcePolicy is the secret's resource-based policy, as stored, or
+	// empty when it has none. It is what the secret's checks evaluate.
+	ResourcePolicy string
+	Tags           []Tag
+}
+
+// SecretPolicy is a secret's resource-based policy. Policy is empty when the
+// secret has none.
+type SecretPolicy struct {
+	SecretRef
+	Policy string
 }
 
 // DeletedSecret is the outcome of a DeleteSecret call. DeletionDate is zero

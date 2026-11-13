@@ -92,7 +92,8 @@ func (m *Module) batchGetSecretValue(ctx gas.Context) error {
 			return smapi.ErrTooLong(fmt.Sprintf("secretIdList.%d.member", i+1), id, maxSecretIDLen)
 		}
 	}
-	if err = m.authorizeAll(ctx, "BatchGetSecretValue"); err != nil {
+	if err = m.authorizeAll(ctx, "BatchGetSecretValue",
+		"secretsmanager:BatchGetSecretValue", true); err != nil {
 		return err
 	}
 

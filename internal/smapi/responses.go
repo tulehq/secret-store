@@ -115,3 +115,24 @@ type BatchGetSecretValueResponse struct {
 // EmptyResponse is the body of the operations that answer with nothing:
 // TagResource and UntagResource.
 type EmptyResponse struct{}
+
+// ResourcePolicyResponse is the body of PutResourcePolicy,
+// GetResourcePolicy and DeleteResourcePolicy. ResourcePolicy is set by
+// GetResourcePolicy only, for a secret that has one.
+type ResourcePolicyResponse struct {
+	SecretRefResponse
+	PolicyName     string `json:"PolicyName,omitempty"`
+	ResourcePolicy string `json:"ResourcePolicy,omitempty"`
+}
+
+// ValidateResourcePolicyResponse is the body of ValidateResourcePolicy.
+type ValidateResourcePolicyResponse struct {
+	ValidationErrors       []ValidationErrorsEntry `json:"ValidationErrors"`
+	PolicyValidationPassed bool                    `json:"PolicyValidationPassed"`
+}
+
+// ValidationErrorsEntry is one check a policy failed.
+type ValidationErrorsEntry struct {
+	CheckName    string `json:"CheckName,omitempty"`
+	ErrorMessage string `json:"ErrorMessage,omitempty"`
+}

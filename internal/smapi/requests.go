@@ -113,3 +113,25 @@ type Tag struct {
 	Key   string `json:"Key"`
 	Value string `json:"Value"`
 }
+
+// PutResourcePolicyRequest is the body of PutResourcePolicy.
+type PutResourcePolicyRequest struct {
+	BlockPublicPolicy *bool   `json:"BlockPublicPolicy"`
+	PolicyName        *string `json:"PolicyName"`
+	ResourcePolicy    *string `json:"ResourcePolicy"`
+	SecretID          string  `json:"SecretId"`
+}
+
+// ResourcePolicyRequest is the body of GetResourcePolicy and
+// DeleteResourcePolicy.
+type ResourcePolicyRequest struct {
+	PolicyName *string `json:"PolicyName"`
+	SecretID   string  `json:"SecretId"`
+}
+
+// ValidateResourcePolicyRequest is the body of ValidateResourcePolicy. Its
+// SecretId is optional.
+type ValidateResourcePolicyRequest struct {
+	ResourcePolicy *string `json:"ResourcePolicy"`
+	SecretID       *string `json:"SecretId"`
+}

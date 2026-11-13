@@ -18,7 +18,7 @@ func (m *Module) listSecrets(ctx gas.Context) error {
 	if err = rejectSort(req.SortBy, req.SortOrder); err != nil {
 		return err
 	}
-	if err = m.authorizeAll(ctx, "ListSecrets"); err != nil {
+	if err = m.authorizeAll(ctx, "ListSecrets", "secretsmanager:ListSecrets", false); err != nil {
 		return err
 	}
 

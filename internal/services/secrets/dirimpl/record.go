@@ -24,6 +24,7 @@ type record struct {
 	ARN              string          `json:"arn"`
 	Description      string          `json:"description,omitempty"`
 	KmsKeyID         string          `json:"kmsKeyId,omitempty"`
+	ResourcePolicy   string          `json:"resourcePolicy,omitempty"`
 	Tags             []contracts.Tag `json:"tags,omitempty"`
 	Versions         []recordVersion `json:"versions"`
 }
@@ -131,6 +132,7 @@ func (r *record) detail() contracts.SecretDetail {
 		SecretRef:        r.ref(),
 		Description:      r.Description,
 		KmsKeyID:         r.KmsKeyID,
+		ResourcePolicy:   r.ResourcePolicy,
 		Tags:             slices.Clone(r.Tags),
 		CreatedDate:      r.CreatedDate,
 		LastChangedDate:  r.LastChangedDate,

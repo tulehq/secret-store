@@ -93,8 +93,16 @@ var Operations = map[string][]Check{
 		Keys: withSecretKeys(
 			"secretsmanager:ForceDeleteWithoutRecovery", "secretsmanager:RecoveryWindowInDays"),
 	}},
+	"DeleteResourcePolicy": {{
+		Action: "secretsmanager:DeleteResourcePolicy", Resource: Secret,
+		Keys: withSecretKeys("secretsmanager:PolicyName"),
+	}},
 	"DescribeSecret": {{
 		Action: "secretsmanager:DescribeSecret", Resource: Secret, Keys: withSecretKeys(),
+	}},
+	"GetResourcePolicy": {{
+		Action: "secretsmanager:GetResourcePolicy", Resource: Secret,
+		Keys: withSecretKeys("secretsmanager:PolicyName"),
 	}},
 	"GetSecretValue": {{
 		Action: "secretsmanager:GetSecretValue", Resource: Secret,
@@ -104,6 +112,10 @@ var Operations = map[string][]Check{
 		Action: "secretsmanager:ListSecretVersionIds", Resource: Secret, Keys: withSecretKeys(),
 	}},
 	"ListSecrets": {{Action: "secretsmanager:ListSecrets", Resource: AllResources}},
+	"PutResourcePolicy": {{
+		Action: "secretsmanager:PutResourcePolicy", Resource: Secret,
+		Keys: withSecretKeys("secretsmanager:BlockPublicPolicy", "secretsmanager:PolicyName"),
+	}},
 	"PutSecretValue": {{
 		Action: "secretsmanager:PutSecretValue", Resource: Secret, Keys: withSecretKeys(),
 	}},
@@ -126,4 +138,18 @@ var Operations = map[string][]Check{
 		Action: "secretsmanager:UpdateSecretVersionStage", Resource: Secret,
 		Keys: withSecretKeys("secretsmanager:VersionStage"),
 	}},
+	// "Required permissions: secretsmanager:ValidateResourcePolicy and
+	// secretsmanager:PutResourcePolicy" (ValidateResourcePolicy, API
+	// reference). Without a SecretId both are evaluated on "*", as actions on
+	// no secret of the store's.
+	"ValidateResourcePolicy": {
+		{
+			Action: "secretsmanager:ValidateResourcePolicy", Resource: Secret,
+			Keys: withSecretKeys(),
+		},
+		{
+			Action: "secretsmanager:PutResourcePolicy", Resource: Secret,
+			Keys: withSecretKeys(),
+		},
+	},
 }

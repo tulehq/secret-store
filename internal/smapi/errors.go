@@ -57,6 +57,8 @@ const (
 	TypeExpiredToken       = "ExpiredTokenException"
 	TypeAccessDenied       = "AccessDeniedException"
 	TypeValidation         = "ValidationException"
+	TypeMalformedPolicy    = "MalformedPolicyDocumentException"
+	TypePublicPolicy       = "PublicPolicyException"
 )
 
 // ErrResourceNotFound is the error for an identifier that names no secret.
@@ -87,6 +89,38 @@ func ErrTooLong(field, value string, maxLen int) *Error {
 	return NewError(http.StatusBadRequest, TypeValidation, fmt.Sprintf(
 		"1 validation error detected: Value '%s' at '%s' failed to satisfy constraint: "+
 			"Member must have length less than or equal to %d", value, field, maxLen))
+}
+
+// ErrTooShort is ErrTooLong's counterpart for a parameter shorter than the
+// model's minimum length, such as an empty one.
+func ErrTooShort(field, value string, minLen int) *Error {
+	return NewError(http.StatusBadRequest, TypeValidation, fmt.Sprintf(
+		"1 validation error detected: Value '%s' at '%s' failed to satisfy constraint: "+
+			"Member must have length greater than or equal to %d", value, field, minLen))
+}
+
+// ErrPattern is the model validation error for a parameter that does not
+// match the model's pattern. value has been checked to be short, so it is
+// echoed whole.
+func ErrPattern(field, value, pattern string) *Error {
+	return NewError(http.StatusBadRequest, TypeValidation, fmt.Sprintf(
+		"1 validation error detected: Value '%s' at '%s' failed to satisfy constraint: "+
+			"Member must satisfy regular expression pattern: %s", value, field, pattern))
+}
+
+// ErrMalformedPolicy is the error for a resource policy that does not parse
+// (PutResourcePolicy, ValidateResourcePolicy: "The resource policy has
+// syntax errors."). msg is the parser's MalformedPolicyDocument message.
+func ErrMalformedPolicy(msg string) *Error {
+	return NewError(http.StatusBadRequest, TypeMalformedPolicy, msg)
+}
+
+// ErrPublicPolicy is PutResourcePolicy's error for a policy that grants broad
+// access when BlockPublicPolicy is set ("The BlockPublicPolicy parameter is
+// set to true, and the resource policy did not prevent broad access to the
+// secret.").
+func ErrPublicPolicy(msg string) *Error {
+	return NewError(http.StatusBadRequest, TypePublicPolicy, msg)
 }
 
 // ErrInvalidParameter is the error for a parameter whose value is not allowed.
