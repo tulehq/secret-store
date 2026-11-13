@@ -205,6 +205,8 @@ func TestCallersAccountChecksAsTheCallersOwn(t *testing.T) {
 }
 
 func TestRootAndTypeMustAgree(t *testing.T) {
+	// Every principal is of the store's own account, where a consistent
+	// root would skip evaluation: the check runs before that shortcut.
 	a := New("us-east-1", "000000000000")
 	const rootARN = "arn:aws:iam::000000000000:root"
 	for name, p := range map[string]sigv4.Principal{
@@ -212,7 +214,7 @@ func TestRootAndTypeMustAgree(t *testing.T) {
 			AccountID: "000000000000", ARN: rootARN, PrincipalARN: rootARN,
 			UserID: "000000000000", Type: sigv4.PrincipalTypeAccount,
 		},
-		"a root user principal": {
+		"a root user principal of the store's account": {
 			AccountID: "000000000000", ARN: userARN, PrincipalARN: userARN,
 			UserID: "AIDAEXAMPLEUSER00001", Type: sigv4.PrincipalTypeUser, Root: true,
 		},
