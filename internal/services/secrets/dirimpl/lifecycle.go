@@ -204,11 +204,16 @@ func (s *Service) DeleteSecret(
 	}
 	rec.DeletedDate = now.Add(window)
 	rec.LastChangedDate = now
+	// A rotation running on the secret ends: nothing rotates a secret
+	// scheduled for deletion. Its ID is returned, for its goroutine to stop.
+	ended := rec.endRun()
 
 	if err = s.write(rec); err != nil {
 		return nil, err
 	}
-	return &contracts.DeletedSecret{SecretRef: rec.ref(), DeletionDate: rec.DeletedDate}, nil
+	return &contracts.DeletedSecret{
+		SecretRef: rec.ref(), DeletionDate: rec.DeletedDate, EndedRun: ended,
+	}, nil
 }
 
 // forceDelete removes a secret outright, with no recovery window.
@@ -238,7 +243,9 @@ func (s *Service) forceDelete(
 	if err = s.remove(rec.Name); err != nil {
 		return nil, err
 	}
-	return &contracts.DeletedSecret{SecretRef: rec.ref(), DeletionDate: now}, nil
+	return &contracts.DeletedSecret{
+		SecretRef: rec.ref(), DeletionDate: now, EndedRun: rec.endRun(),
+	}, nil
 }
 
 // echoRef reports an identifier back as the field it looks like, for an answer

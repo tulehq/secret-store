@@ -46,6 +46,7 @@ func (m *Module) listSecrets(ctx gas.Context) error {
 			LastAccessedDate:       smapi.Stamp(detail.LastAccessedDate),
 			DeletedDate:            smapi.Stamp(detail.DeletedDate),
 			SecretVersionsToStages: detail.VersionStages,
+			Rotation:               wireRotation(detail.Rotation),
 		})
 	}
 

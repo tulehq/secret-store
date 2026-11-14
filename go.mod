@@ -6,6 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.48.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.21.0
 	github.com/aws/aws-sdk-go-v2/service/iam v1.65.0
+	github.com/aws/aws-sdk-go-v2/service/lambda v1.114.4
 	github.com/aws/aws-sdk-go-v2/service/organizations v1.62.8
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.50.12
 	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0
@@ -15,12 +16,14 @@ require (
 	github.com/gasmod/gas/log v0.9.0
 	github.com/go-chi/chi/v5 v5.5.1-0.20261018135022-9f8adb1aabaa
 	github.com/rs/zerolog v1.35.1
+	tule.dev/functions v0.5.0
 	tule.dev/identity v0.5.0
-	tule.dev/policy v0.3.0
+	tule.dev/policy v0.4.0
 	tule.dev/sigv4 v0.5.0
 )
 
 require (
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.27 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.33.18 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.9 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.12 // indirect

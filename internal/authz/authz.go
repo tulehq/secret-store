@@ -298,3 +298,39 @@ func listed(names []string, key string) bool {
 	}
 	return false
 }
+
+// InvokeAction is the action RotateSecret's caller also needs on the
+// rotation function.
+const InvokeAction = "lambda:InvokeFunction"
+
+// CheckInvoke evaluates lambda:InvokeFunction on the function functionARN,
+// in account, for ctx's request: with the principal's identity policies and
+// the global keys of the request, and no resource-based policy, since the
+// function policy is the functions service's and not read here. The
+// function is evaluated as a resource of account, so a principal of another
+// account, which on AWS would need the function policy to grant it, is
+// denied ("because no resource-based policy allows ..."). The root
+// principal is not evaluated. Its answers are Check's.
+func (a *Authorizer) CheckInvoke(ctx context.Context, functionARN, account string) error {
+	s, ok := ctx.Value(subjectKey{}).(*subject)
+	if !ok {
+		return errNoSubject
+	}
+	if s.root {
+		return nil
+	}
+	if err := capContext(s.global); err != nil {
+		return err
+	}
+	az := policy.Authorize(policy.AuthorizeRequest{
+		Action:          InvokeAction,
+		Resource:        functionARN,
+		ResourceAccount: account,
+		Caller:          s.caller,
+		Context:         s.global,
+		Unknown:         s.unknown,
+	}, nil, s.policies...)
+	return decide(az, s.caller.ARN, Request{
+		Action: InvokeAction, Resource: functionARN, Shown: functionARN,
+	})
+}

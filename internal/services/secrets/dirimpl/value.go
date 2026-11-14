@@ -50,7 +50,10 @@ func selectVersion(
 ) (*recordVersion, error) {
 	if in.VersionID != "" {
 		version := rec.byID(in.VersionID)
-		if version == nil {
+		// The version a rotation created and its function has not filled
+		// has no value to read, which the rotation function templates
+		// expect to be ResourceNotFoundException.
+		if version == nil || version.payload().IsZero() {
 			return nil, fmt.Errorf("%w: version %s of %s",
 				contracts.ErrVersionNotFound, in.VersionID, rec.Name)
 		}
@@ -66,7 +69,7 @@ func selectVersion(
 		stage = contracts.StageCurrent
 	}
 	version := rec.byStage(stage)
-	if version == nil {
+	if version == nil || version.payload().IsZero() {
 		return nil, fmt.Errorf("%w: staging label %s of %s",
 			contracts.ErrVersionNotFound, stage, rec.Name)
 	}
@@ -141,7 +144,8 @@ func checkPayload(p contracts.Payload) error {
 // storedVersion answers a write whose version ID a version already holds, so
 // a retry is not stored twice. It returns the stored version when the value
 // matches, ErrVersionExists when it does not, and nothing at all when the ID
-// is new or absent.
+// is new or absent, or names a version without a value, which a rotation
+// created for the write to fill (see record.addVersion).
 //
 // Both writes that take a client request token need this: the SDKs fill one in
 // for PutSecretValue and UpdateSecret alike, so an SDK-level retry of either
@@ -156,7 +160,7 @@ func storedVersion(
 	}
 
 	existing := rec.byID(versionID)
-	if existing == nil {
+	if existing == nil || existing.payload().IsZero() {
 		return nil, nil
 	}
 	if !existing.payload().Equal(payload) {

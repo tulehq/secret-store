@@ -218,6 +218,17 @@ var sentinelErrors = []struct {
 	{contracts.ErrDuplicateTagKeys, ErrInvalidParameter("Duplicate tag keys in request")},
 	{contracts.ErrInvalidToken, NewError(http.StatusBadRequest, TypeInvalidNextToken,
 		"Invalid NextToken.")},
+	// Secrets Manager's answer to RotateSecret during a rotation, as AWS's
+	// re:Post knowledge center quotes it
+	// (repost.aws/knowledge-center/rotate-secrets-manager-secret-vpc).
+	{contracts.ErrRotationInProgress, ErrInvalidRequest(
+		"A previous rotation isn't complete. That rotation will be reattempted.")},
+	// The API reference lists the cause ("You tried to enable rotation on a
+	// secret that doesn't already have a Lambda function ARN configured and
+	// you didn't include such an ARN as a parameter in this call.") but not
+	// the message; this one is the moto project's rendering of it.
+	{contracts.ErrNoRotationFunction, ErrInvalidRequest(
+		"No Lambda rotation function ARN is associated with this secret.")},
 }
 
 // ToError maps err to an error document, logging it when it maps to an

@@ -328,9 +328,20 @@ func TestUnimplementedOperation(t *testing.T) {
 	c := newClient(t)
 	createSecret(t, c, "example/unrotated", "v1")
 
-	// Rotation needs a Lambda, so the service says so rather than pretending.
+	// Rotation needs a functions endpoint to invoke rotation functions
+	// through, which this server has none of, so it says so rather than
+	// pretending; replication is never served.
 	_, err := c.RotateSecret(context.Background(), &awssm.RotateSecretInput{
 		SecretId: aws.String("example/unrotated"),
+	})
+	requireCode(t, err, "NotImplementedException")
+	_, err = c.CancelRotateSecret(context.Background(), &awssm.CancelRotateSecretInput{
+		SecretId: aws.String("example/unrotated"),
+	})
+	requireCode(t, err, "NotImplementedException")
+	_, err = c.ReplicateSecretToRegions(context.Background(), &awssm.ReplicateSecretToRegionsInput{
+		SecretId:          aws.String("example/unrotated"),
+		AddReplicaRegions: []types.ReplicaRegionType{{Region: aws.String("eu-west-1")}},
 	})
 	requireCode(t, err, "NotImplementedException")
 }

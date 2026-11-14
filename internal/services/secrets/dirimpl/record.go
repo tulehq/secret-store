@@ -14,8 +14,11 @@ import (
 )
 
 // record is one secret as it is stored: its metadata and every version of its
-// value, oldest version first.
+// value, oldest version first. Rotation is absent from a record never
+// configured for rotation, as from every record written before rotation was
+// served, which therefore loads unchanged.
 type record struct {
+	Rotation         *recordRotation `json:"rotation,omitempty"`
 	CreatedDate      time.Time       `json:"createdDate"`
 	LastChangedDate  time.Time       `json:"lastChangedDate"`
 	LastAccessedDate time.Time       `json:"lastAccessedDate,omitzero"`
@@ -31,7 +34,8 @@ type record struct {
 
 // recordVersion is one version of a secret's value. Exactly one of
 // SecretString and SecretBinary is set, as Secrets Manager reports back
-// whichever kind was written.
+// whichever kind was written, except in the version a rotation creates for
+// its rotation function to fill, which has neither until then.
 type recordVersion struct {
 	CreatedDate  time.Time `json:"createdDate"`
 	SecretString *string   `json:"secretString,omitempty"`
@@ -106,10 +110,16 @@ func (r *record) moveStage(versionID, stage string) {
 }
 
 // addVersion appends a version and gives it stages, moving each label off
-// whichever version holds it.
+// whichever version holds it. A version of that ID that has no value, as a
+// rotation creates one, is given v's value in place instead, and keeps the
+// labels it has.
 func (r *record) addVersion(v recordVersion, stages []string) {
-	v.Stages = nil
-	r.Versions = append(r.Versions, v)
+	if empty := r.byID(v.VersionID); empty != nil && empty.payload().IsZero() {
+		empty.SecretString, empty.SecretBinary = v.SecretString, v.SecretBinary
+	} else {
+		v.Stages = nil
+		r.Versions = append(r.Versions, v)
+	}
 
 	for _, stage := range stages {
 		r.moveStage(v.VersionID, stage)
@@ -139,6 +149,7 @@ func (r *record) detail() contracts.SecretDetail {
 		LastAccessedDate: r.LastAccessedDate,
 		DeletedDate:      r.DeletedDate,
 		VersionStages:    r.versionStages(),
+		Rotation:         r.rotationDetail(),
 	}
 }
 

@@ -76,6 +76,36 @@ func TestLoadConfigReadsTheIdentityEndpoint(t *testing.T) {
 	}
 }
 
+func TestLoadConfigChecksTheFunctionsEndpoint(t *testing.T) {
+	for _, value := range []string{"localhost:9060", "http://", "ftp://localhost:9060", "/functions"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TULE_Store_FunctionsEndpoint", value)
+			if _, err := loadEnvConfig(t, "AKID", "secret"); err == nil {
+				t.Fatalf("load config with TULE_Store_FunctionsEndpoint=%q succeeded", value)
+			}
+		})
+	}
+}
+
+func TestLoadConfigReadsTheFunctionsEndpoint(t *testing.T) {
+	cfg, err := loadEnvConfig(t, "AKID", "secret")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got := cfg.Store.FunctionsEndpoint; got != "" {
+		t.Fatalf("default functions endpoint = %q, want none", got)
+	}
+
+	t.Setenv("TULE_Store_FunctionsEndpoint", "http://127.0.0.1:9060")
+	cfg, err = loadEnvConfig(t, "AKID", "secret")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got := cfg.Store.FunctionsEndpoint; got != "http://127.0.0.1:9060" {
+		t.Fatalf("functions endpoint = %q, want http://127.0.0.1:9060", got)
+	}
+}
+
 func TestLoadConfigDefaults(t *testing.T) {
 	cfg, err := loadEnvConfig(t, "AKID", "secret")
 	if err != nil {

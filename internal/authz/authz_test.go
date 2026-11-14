@@ -221,13 +221,41 @@ func TestServiceKeysReachTheConditions(t *testing.T) {
 	r := attached(t, a, user(doc))
 
 	req := getValue(secretARN, "app/db")
-	req.Keys = a.SecretKeys(secretARN, map[string]string{"env": "dev", "team": "core"})
+	req.Keys = a.SecretKeys(secretARN, map[string]string{"env": "dev", "team": "core"}, "")
 	if err := a.Check(r.Context(), req); err != nil {
 		t.Fatalf("matching tags: %v", err)
 	}
-	req.Keys = a.SecretKeys(secretARN, map[string]string{"env": "prod", "team": "core"})
+	req.Keys = a.SecretKeys(secretARN, map[string]string{"env": "prod", "team": "core"}, "")
 	if err := a.Check(r.Context(), req); err == nil {
 		t.Fatal("a secret tagged env=prod was allowed")
+	}
+}
+
+func TestTheStoredRotationFunctionReachesTheConditions(t *testing.T) {
+	a := New("us-east-1", "000000000000")
+	fn := "arn:aws:lambda:us-east-1:000000000000:function:rotate"
+	doc := `{"Version":"2012-10-17","Statement":{"Effect":"Allow",` +
+		`"Action":"secretsmanager:GetSecretValue","Resource":"*",` +
+		`"Condition":{"ArnEquals":{"secretsmanager:resource/AllowRotationLambdaArn":"` +
+		fn + `"}}}}`
+	r := attached(t, a, user(doc))
+
+	req := getValue(secretARN, "app/db")
+	req.Keys = a.SecretKeys(secretARN, nil, fn)
+	if err := a.Check(r.Context(), req); err != nil {
+		t.Fatalf("the secret rotated by the function: %v", err)
+	}
+	req.Keys = a.SecretKeys(secretARN, nil, fn+"-other")
+	if err := a.Check(r.Context(), req); err == nil {
+		t.Fatal("a secret rotated by another function was allowed")
+	}
+	// A secret with no rotation function has no value for the key.
+	req.Keys = a.SecretKeys(secretARN, nil, "")
+	if _, ok := req.Keys["secretsmanager:resource/AllowRotationLambdaArn"]; ok {
+		t.Fatal("the key is supplied for a secret with no rotation function")
+	}
+	if err := a.Check(r.Context(), req); err == nil {
+		t.Fatal("a secret without a rotation function was allowed")
 	}
 }
 
