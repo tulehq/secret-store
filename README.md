@@ -47,6 +47,7 @@ Settings come from environment variables prefixed with `TULE_`, and from a
 | `TULE_Store_Region` | `us-east-1` | Region in the ARNs the store mints |
 | `TULE_Store_AccountID` | `000000000000` | Account in the ARNs the store mints |
 | `TULE_Store_Seed` | unset | JSON object of secret name to value, created at startup if missing |
+| `TULE_Store_FunctionsEndpoint` | unset | The [functions](https://github.com/tulehq/functions) service's base URL, such as `http://localhost:9060`, to serve `RotateSecret` and `CancelRotateSecret` by invoking rotation functions there ([Rotation](#rotation)). Unset, both answer `501` |
 | `TULE_HSTS_MaxAge` | unset | `Strict-Transport-Security` max age; the header is only sent when set |
 | `TULE_Server_ReadTimeout` | `30s` | How long the server may take to read a request, body included |
 | `TULE_Server_ReadHeaderTimeout` | `30s` | How long it may take to read a request's headers; must be positive |
@@ -64,8 +65,33 @@ is no log shipping.
 
 The server refuses to start without an access key, because every request is
 verified against it and any web page the developer has open can reach a server
-on localhost. It also refuses an identity endpoint that is not an `http` or
-`https` URL.
+on localhost. It also refuses an identity or functions endpoint that is not an
+`http` or `https` URL.
+
+### The functions endpoint
+
+The setting is in the `Store` section, this service's own, as every Tule
+service names the services it calls in its own section
+(`TULE_Functions_QueuesEndpoint`, `TULE_Identity_AccountsEndpoint`); only
+identity's endpoint is under `Auth`. With `TULE_Store_FunctionsEndpoint`
+set, rotation functions are invoked
+through the functions service's service-invoke endpoint
+(`POST /_internal/invoke`, functions v0.5.0 or later; functions README, "The
+service invoke endpoint"), with its client `tule.dev/functions/serviceinvoke`.
+The calls are signed with `TULE_Auth_AccessKeyID` and
+`TULE_Auth_SecretAccessKey`, which that endpoint accepts only as the root user
+of its account: functions' own configured key, or, when both services use
+identity, identity's root key. Configure the two services with the same key,
+as for identity. A call has no timeout of its own below 16 minutes, since a
+step runs as long as the function, up to its 900-second limit.
+
+Set, it needs a fixed `TULE_Server_Port`: the server refuses to start with
+port `0` (see [Restarts](#restarts)).
+
+Unset, `RotateSecret` and `CancelRotateSecret` answer `501
+NotImplementedException` to every caller, without evaluating any policy, as
+before; nothing is scheduled, and a rotation a previous run left in progress
+waits, untouched, until the server runs with an endpoint again.
 
 ### Keys issued by identity
 
@@ -144,6 +170,23 @@ policy` or `... because no resource-based policy allows the <action> action`
 kinds deny, the identity-based one is named. The resource in the message is the `SecretId` (or `Name`) as the
 request gave it, as Secrets Manager's own messages show it, or `*`; the
 policy is evaluated on the secret's full ARN.
+
+### Changes from v0.5.0
+
+- **`RotateSecret` and `CancelRotateSecret` are served** when
+  `TULE_Store_FunctionsEndpoint` names a functions service v0.5.0 or later
+  ([Rotation](#rotation)); without it they still answer `501`. The caller
+  of `RotateSecret` also needs `lambda:InvokeFunction` on the rotation
+  function, and the function's policy must allow
+  `secretsmanager.amazonaws.com` to invoke it.
+- **`GetRandomPassword` is served**, authorized as
+  `secretsmanager:GetRandomPassword` on `*`.
+- **`aws:PrincipalIsAWSService` is `false`** for every evaluated principal,
+  where v0.5.0 left it absent, and `aws:PrincipalServiceName` is absent
+  whatever the request carries (tule.dev/policy v0.4.0). A `Bool` `Deny` on
+  `aws:PrincipalIsAWSService` being `false` now applies.
+- **`secretsmanager:resource/AllowRotationLambdaArn`** is supplied on every
+  secret action of a secret with a rotation function stored.
 
 ### Changes from v0.4.0
 
@@ -293,6 +336,7 @@ reference.
 | `BatchGetSecretValue` | `secretsmanager:BatchGetSecretValue`, then `secretsmanager:GetSecretValue` for each secret | `*`, then each secret |
 | `ListSecrets` | `secretsmanager:ListSecrets` | `*` |
 | `GetRandomPassword` | `secretsmanager:GetRandomPassword` | `*` |
+| `RotateSecret` | `secretsmanager:RotateSecret`, then `lambda:InvokeFunction` | the secret, then the rotation function (see [Rotation](#permissions-for-rotation)) |
 | every other operation | `secretsmanager:<Operation>` | the secret |
 
 The new secret's ARN is minted before `CreateSecret` is evaluated, so a
@@ -341,10 +385,17 @@ reports them for an account that is a member or the management account of
 the organization; neither for any other account), and, from the
 principal identity reports, `aws:PrincipalAccount`, `aws:PrincipalArn` (a
 user's ARN, or for a role session its role's ARN with its path),
-`aws:userid`, `aws:PrincipalType` and, for a user, `aws:username`. With an
+`aws:userid`, `aws:PrincipalType`, for a user `aws:username`, and
+`aws:PrincipalIsAWSService` as `false`, which tule.dev/policy v0.4.0 sets
+for every caller (before it, the key was absent, so a `Bool` condition on
+`false` did not hold). With an
 action on a secret come `secretsmanager:SecretId` (its ARN),
-`secretsmanager:SecretPrimaryRegion` (`TULE_Store_Region`) and its tags as
-`aws:ResourceTag/<key>` and `secretsmanager:ResourceTag/<key>`. By operation:
+`secretsmanager:SecretPrimaryRegion` (`TULE_Store_Region`), its tags as
+`aws:ResourceTag/<key>` and `secretsmanager:ResourceTag/<key>`, and, for a
+secret with a rotation function stored, that function's ARN as
+`secretsmanager:resource/AllowRotationLambdaArn`, which the Service
+Authorization Reference lists for every action on a secret (it is reported
+while rotation is off too, as the function stays stored). By operation:
 `secretsmanager:Name`, `secretsmanager:Description` and
 `secretsmanager:KmsKeyId` on `CreateSecret`; `secretsmanager:Description` and
 `secretsmanager:KmsKeyId` on `UpdateSecret`; `secretsmanager:VersionId` and
@@ -353,10 +404,16 @@ action on a secret come `secretsmanager:SecretId` (its ARN),
 `secretsmanager:ForceDeleteWithoutRecovery` (when true) and
 `secretsmanager:RecoveryWindowInDays` on `DeleteSecret`;
 `aws:RequestTag/<key>` and `aws:TagKeys` on `CreateSecret` and `TagResource`,
-`aws:TagKeys` on `UntagResource`; and `secretsmanager:PolicyName` on the
+`aws:TagKeys` on `UntagResource`; `secretsmanager:PolicyName` on the
 resource-policy operations and `secretsmanager:BlockPublicPolicy` on
-`PutResourcePolicy`. A key is supplied only when the request
-carries its value.
+`PutResourcePolicy`; and `secretsmanager:RotationLambdaARN` (the request's
+`RotationLambdaARN`), `secretsmanager:RotateImmediately` (the request's
+`RotateImmediately`) and `secretsmanager:ModifyRotationRules` (`true` when the
+request has `RotationRules`) on `RotateSecret`. A key is supplied only when
+the request carries its value. The three rotation keys are the reference's,
+with the types it gives them (ARN, Bool, Bool); it was not possible to read
+their descriptions in the reference, so what each is set from is this
+service's reading of its name.
 
 The condition context of one evaluation is capped (256 keys, 64 values per
 key, 4096 bytes per value, 256 KiB in all), well above what AWS lets one
@@ -393,11 +450,13 @@ What is not enforced:
   matches no one once its principal is gone; whether AWS accepts such a
   policy on `PutResourcePolicy` is not verified.
 - **Service principals** in a resource policy never match: no caller here is
-  an AWS service.
+  an AWS service. A rotation function calls secret-store as its execution
+  role's session, not as Secrets Manager.
 - **`secretsmanager:KmsKeyArn`, `secretsmanager:Type`,
-  `secretsmanager:resource/Type`, `secretsmanager:resource/AllowRotationLambdaArn`**
-  and the replication and rotation keys are not supplied; nothing here
-  models KMS, rotation or replication.
+  `secretsmanager:resource/Type`,
+  `secretsmanager:ExternalSecretRotationRoleArn`** and the replication keys
+  are not supplied; nothing here models KMS, managed external secrets or
+  replication.
 - **Permissions boundaries, session policies, SCPs and RCPs** are not
   evaluated, so a resource-policy grant to a role ARN or through
   `aws:PrincipalArn`, which AWS lets them limit, is unlimited here.
@@ -405,7 +464,8 @@ What is not enforced:
   blocks a tag change that would cost the caller its permissions on the
   secret (TagResource, API reference); here it is applied.
 - **The 501 operations** answer 501 to every caller without evaluating a
-  policy.
+  policy: the replication operations always, and `RotateSecret` and
+  `CancelRotateSecret` without a functions endpoint.
 - There is no retrieval or inspection API outside Secrets Manager's own, so
   there is no `tule:Inspect` action here.
 
@@ -497,6 +557,8 @@ curl -fsS --aws-sigv4 aws:amz:us-east-1:secretsmanager --user test:test \
 | `DeleteResourcePolicy` | Succeeds whether or not the secret has a policy |
 | `ValidateResourcePolicy` | Checks syntax and broad access without storing; `SecretId` optional |
 | `GetRandomPassword` | Draws from `crypto/rand`; every option the API reference lists; see below |
+| `RotateSecret` | With a functions endpoint: configures rotation and rotates through a rotation function, in the background; see [Rotation](#rotation) |
+| `CancelRotateSecret` | With a functions endpoint: turns rotation off and stops a rotation in progress; see [Rotation](#rotation) |
 
 The resource-policy operations follow the API reference: a `ResourcePolicy`
 of 1 to 20,480 characters (the "Resource-based policy length" quota counts
@@ -583,6 +645,358 @@ trip, and a read reports back whichever kind was written. A value is capped at
 the version already stored, and reusing one with a different value is a
 `ResourceExistsException`.
 
+## Rotation
+
+With `TULE_Store_FunctionsEndpoint` set ([The functions
+endpoint](#the-functions-endpoint)), `RotateSecret` and `CancelRotateSecret`
+are served with Lambda rotation: secret-store invokes a rotation function, a
+function of that functions service, as Secrets Manager invokes one
+("Rotation by Lambda function", Secrets Manager User Guide). Managed rotation
+and managed external secrets are not served: a request with
+`ExternalSecretRotationRoleArn` or `ExternalSecretRotationMetadata` is refused
+with `InvalidParameterException`.
+
+### Turning rotation on
+
+`RotateSecret` takes these members (API reference, RotateSecret and
+RotationRulesType):
+
+- **`RotationLambdaARN`**, the rotation function, up to 2048 characters
+  (`ValidationException` beyond). It must be a Lambda function's ARN,
+  `arn:aws:lambda:<region>:<account>:function:<name>`, with or without a
+  version or alias; anything else is `InvalidParameterException`, a check of
+  this service's, since the model bounds only the length. The function must
+  be one of the functions service's own account and region, or every
+  invocation of it fails as of a function that does not exist. Left out,
+  the function stored for the secret is used, and a secret with none is
+  refused with `InvalidRequestException`, `No Lambda rotation function ARN is
+  associated with this secret.` The API reference lists that cause ("You
+  tried to enable rotation on a secret that doesn't already have a Lambda
+  function ARN configured and you didn't include such an ARN as a parameter
+  in this call") but not its message; this one is the moto project's.
+- **`RotationRules`**: `AutomaticallyAfterDays`, 1 to 1000, or
+  `ScheduleExpression`, 1 to 256 characters matching
+  `[0-9A-Za-z\(\)#\?\*\-\/, ]+`, but not both, and `Duration`, 2 to 3
+  characters matching `[0-9]+h`. A value outside the model's range, length
+  or pattern is `ValidationException`; a schedule the User Guide's rules
+  refuse is `InvalidParameterException` (see [Schedules](#schedules)). Rules
+  given replace the stored ones whole; left out, the stored ones stay. A
+  secret may have rotation on without any rules, which AWS does not
+  document either way: it then rotates only when asked.
+- **`RotateImmediately`**, `true` when left out: the rotation starts now.
+  With `false`, "Secrets Manager tests the rotation configuration by running
+  the testSecret step of the Lambda rotation function. This test creates an
+  AWSPENDING version of the secret and then removes it." Here that test
+  invokes `testSecret` once, is not retried, and takes `AWSPENDING` off the
+  version however the step ended; the version stays, unlabelled, as every
+  version does here. The `AWSPENDING` version it tests is the empty one
+  `RotateSecret` creates, since no `createSecret` runs to fill it: AWS does
+  not document what value the version it tests holds. A function whose
+  `testSecret` reads the pending value, as the database templates' do,
+  fails the test, which is logged as a failed rotation and changes nothing
+  else.
+- **`ClientRequestToken`**, 32 to 64 characters: the ID of the version the
+  rotation creates, and the `VersionId` `RotateSecret` answers ("The
+  ClientRequestToken field becomes the VersionId of the new version created
+  during the rotation", API reference examples). The SDKs fill one in; a
+  request without one gets a generated UUID.
+
+`RotateSecret` turns rotation on (`RotationEnabled` true), stores the function
+and the rules, creates the version the rotation rotates to, holding
+`AWSPENDING` and no value, the "empty secret version" the API reference
+speaks of, and answers `ARN`, `Name` and `VersionId` at once. The rotation
+runs in the background ("Rotation is an asynchronous process"). A version
+without a value answers `GetSecretValue` with `ResourceNotFoundException`,
+which is what the rotation function templates expect when `createSecret`
+first looks for it, and a `PutSecretValue` whose `ClientRequestToken` is its
+ID stores the value in it, keeping its labels, rather than refusing a reused
+token. It is listed in `VersionIdsToStages` and by `ListSecretVersionIds`,
+which the templates check before every step.
+
+**A rotation in progress.** "If the AWSPENDING staging label is present but
+not attached to the same version as AWSCURRENT, then any later invocation of
+RotateSecret assumes that a previous rotation request is still in progress
+and returns an error" (API reference, RotateSecret). A `RotateSecret` on such
+a secret, or on one a rotation is running on, is refused with
+`InvalidRequestException`, `A previous rotation isn't complete. That rotation
+will be reattempted.`, AWS's message as AWS's re:Post knowledge center
+quotes it (repost.aws/knowledge-center/rotate-secrets-manager-secret-vpc). AWS
+documents nothing about the token of such a request, and this service
+decides: a `ClientRequestToken` that is the running rotation's, or the
+`AWSCURRENT` version's, repeats a request already served, as an SDK retry
+does, and answers that version without starting anything; one that is the
+`AWSPENDING` version's starts that rotation again, to that version. A token
+that names any other existing version is `ResourceExistsException`. A secret
+scheduled for deletion is `InvalidRequestException`, as for every operation
+but `DescribeSecret` and `RestoreSecret`.
+
+### How a rotation runs
+
+A rotation invokes the function once for each step, in order:
+`createSecret`, `setSecret`, `testSecret` and `finishSecret` ("Lambda rotation
+functions", User Guide). Each invocation is synchronous, a `RequestResponse`
+one, and the next step is invoked only once it has returned. AWS does not
+document how it invokes the steps (the Lambda Developer Guide gives Secrets
+Manager's method of invocation as "Secret rotation"), so that is this
+service's choice. Each step's event is
+
+```json
+{"Step": "createSecret", "SecretId": "<the secret's ARN>", "ClientRequestToken": "<the AWSPENDING version's ID>"}
+```
+
+as "Rotation by Lambda function" gives it. That page spells the steps
+`create_secret`, `set_secret`, `test_secret` and `finish_secret`, but the
+functions AWS provides ("Rotation function templates") compare `Step` with
+`createSecret` and so on, as does every function written from them, so those
+are sent. `RotationToken`, which AWS sends for a function that calls Secrets
+Manager through an assumed role or from another account, is not sent, and
+`PutSecretValue` ignores it.
+
+Each invocation goes through the functions service's service-invoke endpoint,
+as the service principal `secretsmanager.amazonaws.com`, with the secret's
+ARN as `SourceArn` and `TULE_Store_AccountID` as `SourceAccount`. functions
+evaluates the function policy for that principal, with the two as
+`aws:SourceArn` and `aws:SourceAccount`, and runs the invocation as `Invoke`
+runs one; its history records it with the source `service` (functions
+README, "The service invoke endpoint").
+
+A step fails when its invocation is refused (the function policy does not
+allow it, there is no such function, the function is not active or is at
+its container cap), cannot be made (functions does not answer), or the
+function returns an error. Once `finishSecret` has returned, the rotation has
+succeeded only if `AWSCURRENT` is on the rotation's version, which is what
+`finishSecret` is to do ("the Lambda rotation function moves the label
+AWSCURRENT from the previous secret version to this version"); otherwise the
+attempt failed. A success records `LastRotatedDate` and leaves `AWSPENDING`
+where the function left it: "When rotation is successful, the AWSPENDING
+staging label might be attached to the same version as the AWSCURRENT
+version, or it might not be attached to any version."
+
+Before each step the rotation checks that it is still the secret's, so one
+that `CancelRotateSecret` or `DeleteSecret` ended invokes no further step. A
+step already running is not stopped in the function: its invocation is
+abandoned, and the function runs on to its end.
+
+### The function policy
+
+As on AWS, the function policy must allow Secrets Manager to invoke the
+function. The User Guide's command ("Set up automatic rotation using the AWS
+CLI"), against functions:
+
+```sh
+aws --endpoint-url http://localhost:9060 lambda add-permission \
+  --function-name my-rotation-function \
+  --action lambda:InvokeFunction \
+  --statement-id SecretsManager \
+  --principal secretsmanager.amazonaws.com \
+  --source-account 000000000000
+```
+
+`--source-arn` with the secret's ARN narrows it to that secret. A function
+whose policy does not allow `secretsmanager.amazonaws.com`, or allows it only
+for another `SourceArn` or `SourceAccount`, is never run: each attempt's
+first invocation is refused, and the rotation fails.
+
+### The execution role
+
+The function runs with its execution role when functions gives its
+containers role sessions (`TULE_Functions_FunctionCredentials=role`, its
+default with identity; functions README, "Execution roles"), and its calls to
+secret-store are signed with that session and evaluated against the role's
+policies like any principal's. The role needs what the User Guide gives a
+rotation function's execution role ("Lambda rotation function execution role
+permissions"), less the EC2 actions a function in a VPC needs:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:UpdateSecretVersionStage"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:000000000000:secret:myapp/db-??????"
+    },
+    {"Effect": "Allow", "Action": "secretsmanager:GetRandomPassword", "Resource": "*"}
+  ]
+}
+```
+
+and a trust policy that lets `lambda.amazonaws.com` assume it. The function
+reaches secret-store through the Docker host: set
+`AWS_ENDPOINT_URL_SECRETS_MANAGER=http://host.docker.internal:9010` in its
+`Environment` (functions README, "Calling Tule services from a function"),
+and run secret-store where the containers can reach that port. Without
+identity, functions gives the containers its configured key, the root key,
+which may do everything.
+
+### Permissions for rotation
+
+- **`RotateSecret`** is evaluated as `secretsmanager:RotateSecret` on the
+  secret, with the secret's keys and the three rotation keys (see [IAM
+  policies](#iam-policies)), and then, once that is allowed, as
+  `lambda:InvokeFunction` on the rotation function: the request's
+  `RotationLambdaARN`, or the secret's stored function when it names none.
+  The API reference requires both ("You also need lambda:InvokeFunction
+  permissions on the rotation function"); the Service Authorization
+  Reference lists only `secretsmanager:RotateSecret`, and `iam:PassRole` for
+  `ExternalSecretRotationRoleArn`, which is refused, so `iam:PassRole` is
+  never evaluated. `lambda:InvokeFunction` is evaluated with tule.dev/policy
+  on the caller's identity policies and the request's global keys alone, on
+  the function's ARN as a resource of the account in it, with no
+  resource-based policy: the function policy is the functions service's,
+  and is not read here. A caller of the function's own account therefore
+  needs an identity `Allow`, and a caller of another account, which on AWS
+  could be granted through the function policy, is always denied it. Both
+  checks run in the store, under its lock, on the secret the request acts
+  on, as every check on a secret does; the root key is not evaluated.
+- **`CancelRotateSecret`** is evaluated as `secretsmanager:CancelRotateSecret`
+  on the secret.
+- **Rotations the schedule starts, and retries**, are the service's own, and
+  nothing is evaluated for them in secret-store; the function policy is
+  still evaluated by functions for every invocation.
+- **The function's calls** are evaluated against its execution role, as
+  above.
+
+### Schedules
+
+The rules follow the User Guide's "Rotation schedules", in UTC:
+
+- **`AutomaticallyAfterDays` N, and `rate(N days)`** (or `day`), N up to 999
+  for a rate ("The maximum rotation period is 999 days"): the window is the
+  UTC day N days after the last rotation, from midnight ("Secrets Manager
+  calculates the next rotation date based on the previous rotation").
+- **`rate(N hours)`** (or `hour`): windows every N hours from midnight,
+  resetting each UTC day, which is `cron(0 0/N * * ? *)`. N under 4 is
+  refused ("You can rotate a secret as often as every four hours"). N of 24
+  or more is refused too, with a hint to write the rate in days: the User
+  Guide says a rate's window starts at midnight and gives no rate in hours
+  above 12, and this service does not guess what a longer one would mean.
+- **`cron(Minutes Hours Day-of-month Month Day-of-week Year)`**, as the User
+  Guide's table allows: Minutes `0`, Year `*`; Hours an hour from 0 to 23 or
+  an increment, `2/10` or `/8`, of at least 4; Day-of-month 1 to 31 with
+  `, - * ? /` and `L`; Month 1 to 12 or `JAN` to `DEC` with `, - * /`;
+  Day-of-week 1 (`SUN`) to 7 (`SAT`) with `, - * ? /`, `L`, `<day>#<n>` and
+  `<day>L` (the table lists `<day>L` under Day-of-month; it names a day of
+  the week, so it is read there). Exactly one of the two day fields is `?`.
+  An expression no date matches, such as the 31st of February, is refused.
+  The window is the first match after the last rotation.
+- **`Duration`**, 1 to 24 hours. Left out, the window lasts an hour for a
+  schedule in hours, one with more than one window a day, and to the end of
+  the UTC day for a schedule in days. A window that would reach into the
+  next UTC day or the next window is refused.
+
+The last rotation the next window counts from is the latest of: the last
+rotation that succeeded; the creation of the `AWSCURRENT` version, so that a
+value stored by hand with `PutSecretValue` or `UpdateSecret` counts as one
+("Manually updating the secret value by calling PutSecretValue or
+UpdateSecret is considered a valid rotation", RotationRulesType); and the
+time rotation was turned on. A failed rotation does not move it, so
+`NextRotationDate` stays where the failed window was, in the past, as
+DescribeSecret's may ("If rotation is unsuccessful, this date may be in the
+past"). The scheduler does not start that window again: it next rotates in
+the first window that starts after the failure, which for a schedule in
+days is the day N days after the day it failed (with
+`AutomaticallyAfterDays` 1, a window that failed on the 3rd is tried again
+on the 4th, whatever its `Duration`), and for a
+cron or hourly schedule the next match.
+Changing the rules of a secret whose rotation is on does not reset it, so
+the new schedule counts from the last rotation; AWS says only that "the
+previously scheduled rotation might still occur".
+
+Secrets Manager "rotates your secret at any time during the rotation
+window"; here a scheduled rotation starts when its window opens, within the
+scheduler's one-minute check. `NextRotationDate` is the end of the next
+window, "the latest date that rotation will occur". A window that passed
+while the server was down is rotated once, at the first check, and not
+retried. A scheduled rotation of a secret whose `AWSPENDING` version a failed
+rotation left apart from `AWSCURRENT` rotates to that version again.
+
+### Failures and retries
+
+"If any rotation step fails, Secrets Manager retries the entire rotation
+process multiple times during the open rotation windows" ("Rotation by Lambda
+function"). Here a rotation is tried three times, a minute apart, each
+attempt from `createSecret`, with the same version, as the templates' steps
+are written to be repeated. A scheduled rotation is not retried past the end
+of its window. The numbers are this service's; AWS gives none.
+
+After the last attempt the rotation is over and has failed: `AWSCURRENT` is
+where it was, the rotation's version keeps `AWSPENDING`, empty if
+`createSecret` never stored a value, and `LastRotatedDate` is unchanged. Each
+failed attempt is logged as a warning and the end of the rotation as an
+error, with the step and the function's error; AWS's CloudTrail events
+(`RotationFailed` and the like) are not modelled. Until `AWSPENDING` comes off
+that version (`UpdateSecretVersionStage` with `RemoveFromVersionId`), a
+`RotateSecret` with another token is refused as above, one with that
+version's token rotates to it again, and so does the next scheduled window.
+
+### Restarts
+
+A secret's rotation configuration, its dates and the rotation running on it
+(its ID, its version, its attempt, when that attempt is due and, for a
+scheduled one, its window's end) are kept in the secret's own file. A shutdown cancels
+the invocation in flight, which the function finishes on its own, waits for
+the rotations to stop, and leaves each as it was recorded. When the server
+starts with a functions endpoint, every rotation it finds is resumed, from
+`createSecret`, at the attempt it was at, after its retry wait if it was in
+one; an attempt a shutdown interrupted does not count as failed. No
+rotation, resumed or new, invokes its function before the server listens:
+gas initializes the services, which resumes the rotations, before it
+serves, and has no event for the server starting to serve, so the rotation
+service dials the configured `TULE_Server_Host` and `TULE_Server_Port`
+(loopback for every interface, gas's default, and for `::`) until a
+connection is accepted, and only then invokes anything. While it waits
+longer than 5 seconds it logs a warning naming the address, and again
+every 30 seconds. `TULE_Server_Port=0`, which gas takes to pick a free
+port, is refused at startup when `TULE_Store_FunctionsEndpoint` is set,
+since gas does not tell the port it picked, and the wait could never end. A function that calls back at
+once is therefore never refused and made to waste an attempt. So a restart
+never leaves a secret in progress for good: every rotation ends after its
+attempts. A rotation is also never left recorded with nothing running it:
+a failure to record an attempt's end is retried every minute, and only the
+rotation a cancel or a deletion ended is stopped (each rotation has an ID,
+and a later rotation of the same secret, even to the same version, is
+another). Started without a functions endpoint, the server leaves
+the recorded rotations as they are, for a later start with one. Files
+written before rotation was served have no rotation configuration, and load
+unchanged.
+
+### CancelRotateSecret
+
+`CancelRotateSecret` "turns off automatic rotation, and if a rotation is
+currently in progress, cancels the rotation" (API reference): `RotationEnabled`
+becomes false and a running rotation invokes no further step. The function
+and the rules stay, and are still reported, as DescribeSecret shows "the
+previous rotation schedule and rotation function" of a secret whose rotation
+was turned off; `LastRotatedDate` and `NextRotationDate` are no longer
+reported. The rotation's version keeps `AWSPENDING`, as AWS leaves it ("You
+might need to remove the staging label AWSPENDING from the partially created
+version"), and its ID is the `VersionId` the call answers whenever
+`AWSPENDING` is on a version that is not `AWSCURRENT`; otherwise the call
+answers `ARN` and `Name` alone. A secret never configured for rotation is
+left as it is. `RotateSecret` turns rotation on again. `DeleteSecret` also
+ends a rotation in progress, abandoning the step in flight as a cancel
+does, and a secret scheduled for deletion is never rotated; a rotation
+after `RestoreSecret` is a new one.
+
+### DescribeSecret and ListSecrets
+
+Both report `RotationEnabled`, left out for a secret never configured for
+rotation ("If the secret has never been configured for rotation, Secrets
+Manager returns null"); `RotationLambdaARN`; `RotationRules`, as
+`RotateSecret` set them; and, while rotation is on, `LastRotatedDate`, once a
+rotation has succeeded, and `NextRotationDate`, for a secret with rules. The
+API reference says of `AutomaticallyAfterDays` that "In DescribeSecret and
+ListSecrets, this value is calculated from the rotation schedule after every
+successful rotation", without saying how, so the rules are reported as they
+were set, never with an `AutomaticallyAfterDays` worked out from a
+`ScheduleExpression`.
+
 ## Differences from AWS
 
 - **Nothing is encrypted.** Each secret is one JSON file under
@@ -621,11 +1035,18 @@ the version already stored, and reusing one with a different value is a
   `IncludeDeprecated`.
 - **`LastAccessedDate` has day granularity,** as on AWS, and is only written
   when the day changes.
-- **No rotation, no replication.** These return
-  `501 NotImplemented` with a `NotImplementedException`: `RotateSecret`,
-  `CancelRotateSecret`, `ReplicateSecretToRegions`, `RemoveRegionsFromReplication` and
-  `StopReplicationToReplica`. A target that names no Secrets Manager
-  operation gets `UnknownOperationException`.
+- **No replication.** These return `501 NotImplemented` with a
+  `NotImplementedException`: `ReplicateSecretToRegions`,
+  `RemoveRegionsFromReplication` and `StopReplicationToReplica`. So do
+  `RotateSecret` and `CancelRotateSecret` without a functions endpoint (see
+  [Rotation](#rotation)). A target that names no Secrets Manager operation
+  gets `UnknownOperationException`.
+- **Lambda rotation only, through functions.** Rotation functions are
+  functions of the Tule functions service, invoked through its service-invoke
+  endpoint; managed rotation and managed external secrets are not served.
+  Where AWS leaves rotation open (how steps are invoked, how often and when a
+  failed rotation is retried, when in its window a scheduled rotation runs,
+  what a restart does), [Rotation](#rotation) says what this service does.
 - **Signature verification is request-level.** The method, path, query, signed
   headers and the body's hash are checked, along with the credential's access
   key, its service, which must be `secretsmanager` (its region is not
@@ -667,12 +1088,29 @@ make push VERSION=0.1.0   # build for amd64 and arm64 and push
 ```
 
 The end-to-end tests include cross-service ones that build
-[identity](https://github.com/tulehq/identity) and
-[accounts](https://github.com/tulehq/accounts) from their source and run
+[identity](https://github.com/tulehq/identity),
+[accounts](https://github.com/tulehq/accounts) and
+[functions](https://github.com/tulehq/functions) from their source and run
 them beside secret-store. They expect the checkouts beside this one, as
-`../identity` and `../accounts`; set `TULE_E2E_IDENTITY_DIR` and
-`TULE_E2E_ACCOUNTS_DIR` to use others. A missing checkout fails the tests
-rather than skipping them.
+`../identity`, `../accounts` and `../functions`; set `TULE_E2E_IDENTITY_DIR`,
+`TULE_E2E_ACCOUNTS_DIR` and `TULE_E2E_FUNCTIONS_DIR` to use others. A missing
+checkout fails the tests rather than skipping them. CI checks out
+`tulehq/identity` v0.5.0, `tulehq/accounts` v0.4.0 and `tulehq/functions`
+v0.5.0.
+
+The rotation tests need Docker, which functions runs the rotation function
+on. The function is `test/e2e/testdata/rotator`, a Go program written as the
+User Guide's rotation template is, built with `aws-lambda-go` for Linux on
+the host's architecture and wrapped in an image built `FROM scratch`, so
+nothing is pulled; the testdata is a module of its own, so `aws-lambda-go` is
+not a requirement of secret-store. The image, and any container functions
+left from it, is removed when the tests end. The secret-store these tests
+run listens where the function's containers reach the Docker host as
+`host.docker.internal`, the address functions binds its Runtime API to for
+the same reason: `127.0.0.1` with Docker Desktop, else the default bridge
+network's gateway. It schedules rotations on a clock the tests advance
+(`app.Config.SetRotationClock`, which no setting exposes), so a scheduled
+rotation is tested without waiting for its window.
 
 ## License
 

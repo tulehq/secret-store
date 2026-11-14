@@ -27,7 +27,10 @@ type Module struct {
 	// shows a stored one: identity's principals client, or
 	// contracts.UnboundPrincipals without identity.
 	principals contracts.PolicyPrincipals
-	handlers   map[string]handler
+	// rotations serves RotateSecret and CancelRotateSecret, which answer
+	// 501 while it is not Available.
+	rotations contracts.Rotations
+	handlers  map[string]handler
 }
 
 // handler serves one operation. Returning an error leaves the response to the
@@ -35,14 +38,16 @@ type Module struct {
 type handler func(gas.Context) error
 
 // NewModule returns a Module serving from secrets, each request authorized by
-// az, the resource policies it stores bound and shown by principals. It
-// registers its route when the app initializes it.
+// az, the resource policies it stores bound and shown by principals, and
+// rotations run by rotations. It registers its route when the app
+// initializes it.
 func NewModule(
 	router *gas.Router,
 	logger gas.Logger,
 	secrets contracts.SecretsProvider,
 	az *authz.Authorizer,
 	principals contracts.PolicyPrincipals,
+	rotations contracts.Rotations,
 ) *Module {
 	m := &Module{
 		router:     router,
@@ -50,6 +55,7 @@ func NewModule(
 		secrets:    secrets,
 		authz:      az,
 		principals: principals,
+		rotations:  rotations,
 	}
 	m.handlers = m.routes()
 	return m
@@ -60,6 +66,7 @@ func NewModule(
 func (m *Module) routes() map[string]handler {
 	return map[string]handler{
 		"BatchGetSecretValue":      m.batchGetSecretValue,
+		"CancelRotateSecret":       m.cancelRotateSecret,
 		"CreateSecret":             m.createSecret,
 		"DeleteResourcePolicy":     m.deleteResourcePolicy,
 		"DeleteSecret":             m.deleteSecret,
@@ -72,6 +79,7 @@ func (m *Module) routes() map[string]handler {
 		"PutResourcePolicy":        m.putResourcePolicy,
 		"PutSecretValue":           m.putSecretValue,
 		"RestoreSecret":            m.restoreSecret,
+		"RotateSecret":             m.rotateSecret,
 		"TagResource":              m.tagResource,
 		"UntagResource":            m.untagResource,
 		"UpdateSecret":             m.updateSecret,
@@ -82,13 +90,12 @@ func (m *Module) routes() map[string]handler {
 
 // unserved are the Secrets Manager operations this service knows of and
 // answers with 501, whoever calls, without evaluating any policy. Each needs
-// something a local stand-in has no business faking: Lambda rotation or
-// cross-region replication.
+// something a local stand-in has no business faking: cross-region
+// replication. RotateSecret and CancelRotateSecret answer the same way while
+// no functions endpoint is configured (contracts.Rotations.Available).
 var unserved = []string{
-	"CancelRotateSecret",
 	"RemoveRegionsFromReplication",
 	"ReplicateSecretToRegions",
-	"RotateSecret",
 	"StopReplicationToReplica",
 }
 

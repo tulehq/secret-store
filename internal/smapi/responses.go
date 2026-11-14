@@ -48,9 +48,23 @@ type DescribeSecretResponse struct {
 	DeletedDate        *Timestamp          `json:"DeletedDate,omitempty"`
 	VersionIDsToStages map[string][]string `json:"VersionIdsToStages,omitempty"`
 	SecretRefResponse
+	Rotation
 	Description string `json:"Description,omitempty"`
 	KmsKeyID    string `json:"KmsKeyId,omitempty"`
 	Tags        []Tag  `json:"Tags,omitempty"`
+}
+
+// Rotation is the rotation members DescribeSecret and ListSecrets report.
+// RotationEnabled is left out for a secret never configured for rotation,
+// and the two dates while rotation is off ("If the secret isn't configured
+// for rotation or rotation has been disabled, Secrets Manager returns
+// null").
+type Rotation struct {
+	RotationEnabled   *bool          `json:"RotationEnabled,omitempty"`
+	RotationRules     *RotationRules `json:"RotationRules,omitempty"`
+	LastRotatedDate   *Timestamp     `json:"LastRotatedDate,omitempty"`
+	NextRotationDate  *Timestamp     `json:"NextRotationDate,omitempty"`
+	RotationLambdaARN string         `json:"RotationLambdaARN,omitempty"`
 }
 
 // SecretListEntry is one secret in a ListSecrets response. It is
@@ -63,6 +77,7 @@ type SecretListEntry struct {
 	DeletedDate            *Timestamp          `json:"DeletedDate,omitempty"`
 	SecretVersionsToStages map[string][]string `json:"SecretVersionsToStages,omitempty"`
 	SecretRefResponse
+	Rotation
 	Description string `json:"Description,omitempty"`
 	KmsKeyID    string `json:"KmsKeyId,omitempty"`
 	Tags        []Tag  `json:"Tags,omitempty"`

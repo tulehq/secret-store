@@ -116,7 +116,11 @@ func (m *Module) checkSecret(
 	if err != nil {
 		return err
 	}
-	all := m.authz.SecretKeys(arn, tags)
+	var rotationFn string
+	if found != nil && found.Rotation != nil {
+		rotationFn = found.Rotation.LambdaARN
+	}
+	all := m.authz.SecretKeys(arn, tags, rotationFn)
 	for k, v := range keys {
 		all[k] = v
 	}
@@ -148,7 +152,7 @@ func (m *Module) checkForeignName(
 	keys map[string][]string,
 ) error {
 	arn := m.authz.SecretARNIn(account, secretID)
-	all := m.authz.SecretKeys(arn, nil)
+	all := m.authz.SecretKeys(arn, nil, "")
 	for k, v := range keys {
 		all[k] = v
 	}

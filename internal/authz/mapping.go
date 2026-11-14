@@ -44,13 +44,15 @@ type Check struct {
 }
 
 // The keys the reference lists for every action on a secret, which the
-// service supplies from the secret: its tags, its ARN and its region, which
-// is always its primary region since nothing here replicates.
+// service supplies from the secret: its tags, its ARN, its region, which
+// is always its primary region since nothing here replicates, and its
+// stored rotation function.
 var secretKeys = []string{
 	"aws:ResourceTag/${TagKey}",
 	"secretsmanager:ResourceTag/tag-key",
 	"secretsmanager:SecretId",
 	"secretsmanager:SecretPrimaryRegion",
+	"secretsmanager:resource/AllowRotationLambdaArn",
 }
 
 func withSecretKeys(keys ...string) []string {
@@ -72,6 +74,9 @@ var Operations = map[string][]Check{
 			When: "for each secret in SecretIdList", Keys: withSecretKeys(),
 		},
 	},
+	"CancelRotateSecret": {{
+		Action: "secretsmanager:CancelRotateSecret", Resource: Secret, Keys: withSecretKeys(),
+	}},
 	"CreateSecret": {
 		{
 			Action: "secretsmanager:CreateSecret", Resource: NewSecret,
@@ -124,6 +129,18 @@ var Operations = map[string][]Check{
 	}},
 	"RestoreSecret": {{
 		Action: "secretsmanager:RestoreSecret", Resource: Secret, Keys: withSecretKeys(),
+	}},
+	// RotateSecret is also authorized as lambda:InvokeFunction on the
+	// rotation function ("You also need lambda:InvokeFunction permissions on
+	// the rotation function", RotateSecret, API reference), which the
+	// reference does not list for the operation, so it is not a Check here:
+	// see Authorizer.CheckInvoke. iam:PassRole, which the reference lists,
+	// is for ExternalSecretRotationRoleArn, which is refused.
+	"RotateSecret": {{
+		Action: "secretsmanager:RotateSecret", Resource: Secret,
+		Keys: withSecretKeys(
+			"secretsmanager:RotationLambdaARN", "secretsmanager:RotateImmediately",
+			"secretsmanager:ModifyRotationRules"),
 	}},
 	"TagResource": {{
 		Action: "secretsmanager:TagResource", Resource: Secret,

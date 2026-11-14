@@ -146,12 +146,20 @@ func TagKeys(tags []smapi.Tag) map[string][]string {
 
 // SecretKeys returns the keys every check on an existing secret carries: its
 // ARN as secretsmanager:SecretId, its tags as aws:ResourceTag/<key> and
-// secretsmanager:ResourceTag/<key>, and the region as
-// secretsmanager:SecretPrimaryRegion.
-func (a *Authorizer) SecretKeys(arn string, tags map[string]string) map[string][]string {
-	keys := make(map[string][]string, 2*len(tags)+2)
+// secretsmanager:ResourceTag/<key>, the region as
+// secretsmanager:SecretPrimaryRegion, and its stored rotation function,
+// when it has one, as secretsmanager:resource/AllowRotationLambdaArn.
+func (a *Authorizer) SecretKeys(
+	arn string,
+	tags map[string]string,
+	rotationFn string,
+) map[string][]string {
+	keys := make(map[string][]string, 2*len(tags)+3)
 	keys["secretsmanager:SecretId"] = []string{arn}
 	keys["secretsmanager:SecretPrimaryRegion"] = []string{a.region}
+	if rotationFn != "" {
+		keys["secretsmanager:resource/AllowRotationLambdaArn"] = []string{rotationFn}
+	}
 	for k, v := range tags {
 		keys["aws:ResourceTag/"+k] = []string{v}
 		keys["secretsmanager:ResourceTag/"+k] = []string{v}

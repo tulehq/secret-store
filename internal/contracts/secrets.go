@@ -156,8 +156,8 @@ func CheckTagKeys(tags []Tag) error {
 
 // The staging labels Secrets Manager manages on behalf of the caller.
 // AWSCURRENT marks the version reads return by default and AWSPREVIOUS the one
-// it replaced. AWSPENDING is only ever set by an explicit request, since
-// nothing here rotates secrets.
+// it replaced. AWSPENDING marks the version a rotation is rotating to, which
+// RotateSecret creates without a value for the rotation function to fill.
 const (
 	StageCurrent  = "AWSCURRENT"
 	StagePrevious = "AWSPREVIOUS"
@@ -204,6 +204,7 @@ type SecretsProvider interface {
 	// DeleteResourcePolicy removes the secret's resource policy. A secret
 	// without one is not an error.
 	DeleteResourcePolicy(ctx context.Context, secretID string) (*SecretRef, error)
+	RotationStore
 }
 
 // Payload is one version's value. Secrets Manager stores either a string or
@@ -282,7 +283,10 @@ type SecretDetail struct {
 	LastChangedDate  time.Time
 	LastAccessedDate time.Time
 	DeletedDate      time.Time
-	VersionStages    map[string][]string
+	// Rotation is the secret's rotation configuration, nil when it was
+	// never configured for rotation.
+	Rotation      *RotationDetail
+	VersionStages map[string][]string
 	SecretRef
 	Description string
 	KmsKeyID    string
@@ -304,6 +308,9 @@ type SecretPolicy struct {
 type DeletedSecret struct {
 	DeletionDate time.Time
 	SecretRef
+	// EndedRun is the ID of the rotation run the deletion ended, empty when
+	// none was running, for the rotation service to stop.
+	EndedRun string
 }
 
 // CreateSecretInput creates a secret holding Payload as its first version.

@@ -125,6 +125,7 @@ func (m *Module) describeSecret(ctx gas.Context) error {
 		LastAccessedDate:   smapi.Stamp(out.LastAccessedDate),
 		DeletedDate:        smapi.Stamp(out.DeletedDate),
 		VersionIDsToStages: out.VersionStages,
+		Rotation:           wireRotation(out.Rotation),
 	})
 }
 
@@ -150,6 +151,9 @@ func (m *Module) deleteSecret(ctx gas.Context) error {
 	})
 	if err != nil {
 		return err
+	}
+	if out.EndedRun != "" {
+		m.rotations.StopRun(out.EndedRun)
 	}
 
 	return smapi.Write(ctx, smapi.DeleteSecretResponse{

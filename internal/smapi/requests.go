@@ -1,5 +1,7 @@
 package smapi
 
+import "encoding/json"
+
 // The request bodies this service reads. Field names and types follow the
 // Secrets Manager API model: a value the caller may legitimately send as empty
 // is a pointer, so an absent field can be told from an empty one.
@@ -148,4 +150,26 @@ type GetRandomPasswordRequest struct {
 	ExcludeUppercase        bool   `json:"ExcludeUppercase"`
 	ExcludeLowercase        bool   `json:"ExcludeLowercase"`
 	IncludeSpace            bool   `json:"IncludeSpace"`
+}
+
+// RotateSecretRequest is the body of RotateSecret. RotateImmediately is a
+// pointer: absent, it takes the API reference's default of true. The two
+// External members are read only to refuse them, as managed external
+// secrets are not served.
+type RotateSecretRequest struct {
+	RotateImmediately              *bool             `json:"RotateImmediately"`
+	RotationRules                  *RotationRules    `json:"RotationRules"`
+	ExternalSecretRotationRoleArn  *string           `json:"ExternalSecretRotationRoleArn"`
+	SecretID                       string            `json:"SecretId"`
+	ClientRequestToken             string            `json:"ClientRequestToken"`
+	RotationLambdaARN              string            `json:"RotationLambdaARN"`
+	ExternalSecretRotationMetadata []json.RawMessage `json:"ExternalSecretRotationMetadata"`
+}
+
+// RotationRules is RotationRulesType: in RotateSecret's request, and in
+// DescribeSecret's and ListSecrets' answers.
+type RotationRules struct {
+	AutomaticallyAfterDays *int64  `json:"AutomaticallyAfterDays,omitempty"`
+	Duration               *string `json:"Duration,omitempty"`
+	ScheduleExpression     *string `json:"ScheduleExpression,omitempty"`
 }

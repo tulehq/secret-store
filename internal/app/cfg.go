@@ -9,6 +9,7 @@ import (
 	"github.com/gasmod/gas"
 	"github.com/gasmod/gas/config"
 
+	"tule.dev/secret-store/internal/services/rotation"
 	"tule.dev/secret-store/internal/services/secrets/dirimpl"
 )
 
@@ -25,7 +26,11 @@ type hstsSettings struct {
 // IdentityEndpoint is the identity service's base URL, or empty to accept the
 // configured key alone. When it is set, the configured key must be identity's
 // root key: it is what the calls to identity's signing-key endpoint are
-// signed with.
+// signed with. It is also what the calls to the functions service's
+// service-invoke endpoint (Store.FunctionsEndpoint) are signed with, which
+// that endpoint accepts only as its account's root user: the functions
+// service's own configured key, or identity's root key when both use
+// identity.
 type authSettings struct {
 	AccessKeyID      string
 	SecretAccessKey  string
@@ -45,7 +50,17 @@ type Config struct {
 	Store *dirimpl.Settings `validate:"required"`
 
 	store gas.ConfigProvider
-	Env   config.Environment
+	// rotationClock is the clock rotations are scheduled on, nil for the
+	// system's (SetRotationClock).
+	rotationClock rotation.Clock
+	Env           config.Environment
+}
+
+// SetRotationClock makes rotations read and wait on clock rather than the
+// system's clock, so a test can move a rotation schedule forward without
+// waiting for it. It is not configurable from the environment.
+func (c *Config) SetRotationClock(clock rotation.Clock) {
+	c.rotationClock = clock
 }
 
 const (
@@ -103,23 +118,25 @@ func bindConfig(store gas.ConfigProvider, env config.Environment) (*Config, erro
 	if cfg.Auth == nil || cfg.Auth.AccessKeyID == "" || cfg.Auth.SecretAccessKey == "" {
 		return nil, errNoCredentials
 	}
-	if err := checkIdentityEndpoint(cfg.Auth.IdentityEndpoint); err != nil {
+	if err := checkEndpoint("Auth.IdentityEndpoint", cfg.Auth.IdentityEndpoint); err != nil {
+		return nil, err
+	}
+	if err := checkEndpoint("Store.FunctionsEndpoint", cfg.Store.FunctionsEndpoint); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
 }
 
-// checkIdentityEndpoint holds the identity endpoint, when set, to an
-// absolute http or https URL.
-func checkIdentityEndpoint(endpoint string) error {
+// checkEndpoint holds the endpoint setting name, when set, to an absolute
+// http or https URL.
+func checkEndpoint(name, endpoint string) error {
 	if endpoint == "" {
 		return nil
 	}
 	u, err := url.Parse(endpoint)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("config: Auth.IdentityEndpoint %q is not an http or https URL",
-			endpoint)
+		return fmt.Errorf("config: %s %q is not an http or https URL", name, endpoint)
 	}
 	return nil
 }

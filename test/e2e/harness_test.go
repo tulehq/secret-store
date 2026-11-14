@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/gasmod/gas/config"
 
 	"tule.dev/secret-store/internal/app"
+	"tule.dev/secret-store/internal/services/rotation"
 )
 
 // server is the app under test, served by the app's own *http.Server over a
@@ -60,7 +62,36 @@ func newClient(t *testing.T) *awssm.Client {
 // env changes them.
 func startServer(t *testing.T, env map[string]string) *server {
 	t.Helper()
+	return startServerWith(t, env, serverOptions{})
+}
 
+// serverOptions are what startServerWith sets beyond the environment.
+type serverOptions struct {
+	// clock, when set, is the clock rotations are scheduled on.
+	clock rotation.Clock
+	// listenHost is the address to listen on, 127.0.0.1 when empty.
+	listenHost string
+}
+
+// startServerWith is startServer with opts. The listener is opened first,
+// on a free port, and the configuration is given its host and port as
+// TULE_Server_Host and TULE_Server_Port, so the app's settings name the
+// address it is served on, which the rotation service waits for before it
+// invokes a function.
+func startServerWith(t *testing.T, env map[string]string, opts serverOptions) *server {
+	t.Helper()
+
+	host := opts.listenHost
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+	t.Setenv("TULE_Server_Host", host)
+	t.Setenv("TULE_Server_Port", port)
 	setEnv(t, env)
 
 	cfg, err := app.LoadConfigFrom(config.NewEnvProvider(
@@ -68,11 +99,16 @@ func startServer(t *testing.T, env map[string]string) *server {
 		config.WithEnvPrefix("TULE_"),
 	))
 	if err != nil {
+		_ = listener.Close()
 		t.Fatalf("load config: %v", err)
+	}
+	if opts.clock != nil {
+		cfg.SetRotationClock(opts.clock)
 	}
 
 	a, err := app.New(cfg)
 	if err != nil {
+		_ = listener.Close()
 		t.Fatalf("new app: %v", err)
 	}
 
@@ -80,10 +116,11 @@ func startServer(t *testing.T, env map[string]string) *server {
 	// services, so the server built after it carries the configured timeouts
 	// rather than the gas defaults.
 	if err = a.Start(context.Background()); err != nil {
+		_ = listener.Close()
 		t.Fatalf("start app: %v", err)
 	}
 
-	srv := serve(t, a)
+	srv := serve(a, listener)
 	t.Cleanup(func() { srv.Stop(t) })
 	return srv
 }
@@ -100,22 +137,17 @@ func setEnv(t *testing.T, env map[string]string) {
 	}
 }
 
-// serve puts the app's own server on a loopback listener on a free port.
-func serve(t *testing.T, a *gas.App) *server {
-	t.Helper()
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+// serve puts the app's own server on listener.
+func serve(a *gas.App, listener net.Listener) *server {
+	addr := listener.Addr().String()
 
 	srv := &server{
 		app:      a,
 		listener: listener,
 		client:   &http.Client{Timeout: clientTimeout},
 		served:   make(chan error, 1),
-		Addr:     listener.Addr().String(),
-		URL:      "http://" + listener.Addr().String(),
+		Addr:     addr,
+		URL:      "http://" + addr,
 	}
 
 	go func() {

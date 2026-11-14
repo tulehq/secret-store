@@ -122,7 +122,10 @@ func boundModule(
 	}
 	store := &recordingStore{Service: svc}
 	fake := &fakePrincipals{}
-	m := &Module{secrets: store, authz: az, principals: fake, logger: &gas.NopLogger{}}
+	m := &Module{
+		secrets: store, authz: az, principals: fake, logger: &gas.NopLogger{},
+		rotations: storeRotations{store: svc},
+	}
 	m.handlers = m.routes()
 	return m, store, fake, r.Context()
 }
