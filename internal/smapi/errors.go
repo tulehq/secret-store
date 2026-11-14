@@ -99,6 +99,22 @@ func ErrTooShort(field, value string, minLen int) *Error {
 			"Member must have length greater than or equal to %d", value, field, minLen))
 }
 
+// ErrTooSmall is the model validation error for a number below the model's
+// minimum value, in ErrTooLong's form.
+func ErrTooSmall(field string, value, minValue int64) *Error {
+	return NewError(http.StatusBadRequest, TypeValidation, fmt.Sprintf(
+		"1 validation error detected: Value '%d' at '%s' failed to satisfy constraint: "+
+			"Member must have value greater than or equal to %d", value, field, minValue))
+}
+
+// ErrTooLarge is ErrTooSmall's counterpart for a number above the model's
+// maximum value.
+func ErrTooLarge(field string, value, maxValue int64) *Error {
+	return NewError(http.StatusBadRequest, TypeValidation, fmt.Sprintf(
+		"1 validation error detected: Value '%d' at '%s' failed to satisfy constraint: "+
+			"Member must have value less than or equal to %d", value, field, maxValue))
+}
+
 // ErrPattern is the model validation error for a parameter that does not
 // match the model's pattern. value has been checked to be short, so it is
 // echoed whole.

@@ -226,6 +226,9 @@ evaluation logic" describe:
   AWS's cross-account documentation does not list it, but it reaches
   nothing `GetSecretValue` cannot. Its own action is evaluated as the
   caller's own, and then each secret, named by ARN, with its own policy.
+- **`GetRandomPassword` is evaluated as the caller's own** (this service's
+  choice): it acts on no secret and reads nothing of the store's, so
+  another account's principal needs only its identity `Allow`.
 - A session whose role was deleted is denied everything.
 - A stored policy that no longer parses fails every evaluated request on its
   secret with `InternalServiceError` (fail closed); the root key still
@@ -289,6 +292,7 @@ reference.
 | `CreateSecret` | `secretsmanager:CreateSecret`, and `secretsmanager:TagResource` when the request has `Tags` | the new secret's ARN, suffix included |
 | `BatchGetSecretValue` | `secretsmanager:BatchGetSecretValue`, then `secretsmanager:GetSecretValue` for each secret | `*`, then each secret |
 | `ListSecrets` | `secretsmanager:ListSecrets` | `*` |
+| `GetRandomPassword` | `secretsmanager:GetRandomPassword` | `*` |
 | every other operation | `secretsmanager:<Operation>` | the secret |
 
 The new secret's ARN is minted before `CreateSecret` is evaluated, so a
@@ -492,6 +496,7 @@ curl -fsS --aws-sigv4 aws:amz:us-east-1:secretsmanager --user test:test \
 | `GetResourcePolicy` | Without a policy, answers the secret's `ARN` and `Name` only |
 | `DeleteResourcePolicy` | Succeeds whether or not the secret has a policy |
 | `ValidateResourcePolicy` | Checks syntax and broad access without storing; `SecretId` optional |
+| `GetRandomPassword` | Draws from `crypto/rand`; every option the API reference lists; see below |
 
 The resource-policy operations follow the API reference: a `ResourcePolicy`
 of 1 to 20,480 characters (the "Resource-based policy length" quota counts
@@ -538,6 +543,28 @@ and both messages are this service's own. It does not make AWS's third
 check, that the policy does not lock out the caller. It needs
 `secretsmanager:ValidateResourcePolicy` and `secretsmanager:PutResourcePolicy`,
 on the secret (with its stored policy) or, without a `SecretId`, on `*`.
+
+`GetRandomPassword` follows the API reference (GetRandomPassword):
+`PasswordLength` defaults to 32 and must be 1 to 4096, and
+`ExcludeCharacters` may be up to 4,096 characters. Both are constraints of
+the API model, so a value outside them is `ValidationException` in the
+model-validation form, as this service answers every model constraint. A password
+draws on uppercase and lowercase letters, digits and the punctuation
+``! " # $ % & ' ( ) * + , - . / : ; < = > ? @ [ \ ] ^ _ ` { | } ~``, less
+what `ExcludeUppercase`, `ExcludeLowercase`, `ExcludeNumbers`,
+`ExcludePunctuation` and `ExcludeCharacters` remove, and on the space only
+with `IncludeSpace`. `RequireEachIncludedType` defaults to true and then
+puts at least one of each included type in the password. Each character is
+chosen uniformly from its alphabet, and the required ones are shuffled into
+uniformly random positions. Options that leave no character, or a
+`PasswordLength` shorter than the number of required types, are
+`InvalidParameterException`, which the reference lists. It leaves two
+cases open, which this service decides: a type whose every character
+`ExcludeCharacters` removes is no longer included, so it is not required;
+and the space is never a required type, since `RequireEachIncludedType`
+names only "one upper and lowercase letter, one number, and one
+punctuation". The `InvalidParameterException` messages are this service's
+own.
 
 A secret is addressable by name, by its full ARN, or by its ARN without the
 random suffix, as Secrets Manager allows. An ARN whose last segment ends in a
@@ -596,7 +623,7 @@ the version already stored, and reusing one with a different value is a
   when the day changes.
 - **No rotation, no replication.** These return
   `501 NotImplemented` with a `NotImplementedException`: `RotateSecret`,
-  `CancelRotateSecret`, `GetRandomPassword`, `ReplicateSecretToRegions`, `RemoveRegionsFromReplication` and
+  `CancelRotateSecret`, `ReplicateSecretToRegions`, `RemoveRegionsFromReplication` and
   `StopReplicationToReplica`. A target that names no Secrets Manager
   operation gets `UnknownOperationException`.
 - **Signature verification is request-level.** The method, path, query, signed

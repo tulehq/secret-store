@@ -18,7 +18,8 @@ import (
 // resource policy for and cannot have. callersAccount checks it instead as on
 // the caller's own account, for an action that reads nothing of the store's
 // by itself: BatchGetSecretValue's own action, whose secrets are each checked
-// with their own policy, and ValidateResourcePolicy without a secret.
+// with their own policy, ValidateResourcePolicy without a secret, and
+// GetRandomPassword.
 func (m *Module) authorizeAll(ctx context.Context, op, action string, callersAccount bool) error {
 	return m.authz.Check(ctx, authz.Request{
 		Operation:      op,
