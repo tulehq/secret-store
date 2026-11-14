@@ -100,6 +100,9 @@ var Operations = map[string][]Check{
 	"DescribeSecret": {{
 		Action: "secretsmanager:DescribeSecret", Resource: Secret, Keys: withSecretKeys(),
 	}},
+	// The reference gives GetRandomPassword no resource type and no
+	// condition keys: it acts on no secret.
+	"GetRandomPassword": {{Action: "secretsmanager:GetRandomPassword", Resource: AllResources}},
 	"GetResourcePolicy": {{
 		Action: "secretsmanager:GetResourcePolicy", Resource: Secret,
 		Keys: withSecretKeys("secretsmanager:PolicyName"),

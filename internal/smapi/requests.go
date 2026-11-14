@@ -135,3 +135,17 @@ type ValidateResourcePolicyRequest struct {
 	ResourcePolicy *string `json:"ResourcePolicy"`
 	SecretID       *string `json:"SecretId"`
 }
+
+// GetRandomPasswordRequest is the body of GetRandomPassword. PasswordLength
+// and RequireEachIncludedType are pointers: absent, they take the API
+// reference's defaults of 32 and true.
+type GetRandomPasswordRequest struct {
+	PasswordLength          *int64 `json:"PasswordLength"`
+	RequireEachIncludedType *bool  `json:"RequireEachIncludedType"`
+	ExcludeCharacters       string `json:"ExcludeCharacters"`
+	ExcludeNumbers          bool   `json:"ExcludeNumbers"`
+	ExcludePunctuation      bool   `json:"ExcludePunctuation"`
+	ExcludeUppercase        bool   `json:"ExcludeUppercase"`
+	ExcludeLowercase        bool   `json:"ExcludeLowercase"`
+	IncludeSpace            bool   `json:"IncludeSpace"`
+}

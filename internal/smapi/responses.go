@@ -136,3 +136,8 @@ type ValidationErrorsEntry struct {
 	CheckName    string `json:"CheckName,omitempty"`
 	ErrorMessage string `json:"ErrorMessage,omitempty"`
 }
+
+// GetRandomPasswordResponse is the body of GetRandomPassword.
+type GetRandomPasswordResponse struct {
+	RandomPassword string `json:"RandomPassword"`
+}
