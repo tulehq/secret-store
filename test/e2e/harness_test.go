@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,14 +25,14 @@ import (
 	"tule.dev/secret-store/internal/services/rotation"
 )
 
-// server is the app under test, served by the app's own *http.Server over a
-// real TCP listener.
+// server is the app under test, served by gas.App.ServeListener over a real
+// TCP listener.
 //
-// The listener is created here rather than by gas.App.Serve, which calls
-// ListenAndServe on the configured address and exposes neither the listener
-// nor the port it ended up on. Everything else is the real thing: the server
-// gas built from the bound configuration, with its timeouts, the CSRF wrapper
-// and the router behind it, reached over the network and shut down through
+// The listener is bound here, on a free port, rather than by gas.App.Serve
+// on the configured address, so no port is picked and released. Everything
+// else is the real thing: the server gas built from the bound configuration,
+// with its timeouts, the CSRF wrapper and the router behind it, served
+// through gas's lifecycle, reached over the network and shut down through
 // gas.App.Stop. Binding the configured port is left to the smoke test, which
 // runs the built image as users do.
 type server struct {
@@ -74,10 +74,7 @@ type serverOptions struct {
 }
 
 // startServerWith is startServer with opts. The listener is opened first,
-// on a free port, and the configuration is given its host and port as
-// TULE_Server_Host and TULE_Server_Port, so the app's settings name the
-// address it is served on, which the rotation service waits for before it
-// invokes a function.
+// on a free port of opts.listenHost.
 func startServerWith(t *testing.T, env map[string]string, opts serverOptions) *server {
 	t.Helper()
 
@@ -89,9 +86,6 @@ func startServerWith(t *testing.T, env map[string]string, opts serverOptions) *s
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
-	t.Setenv("TULE_Server_Host", host)
-	t.Setenv("TULE_Server_Port", port)
 	setEnv(t, env)
 
 	cfg, err := app.LoadConfigFrom(config.NewEnvProvider(
@@ -120,7 +114,7 @@ func startServerWith(t *testing.T, env map[string]string, opts serverOptions) *s
 		t.Fatalf("start app: %v", err)
 	}
 
-	srv := serve(a, listener)
+	srv := serve(t, a, listener)
 	t.Cleanup(func() { srv.Stop(t) })
 	return srv
 }
@@ -137,8 +131,13 @@ func setEnv(t *testing.T, env map[string]string) {
 	}
 }
 
-// serve puts the app's own server on listener.
-func serve(a *gas.App, listener net.Listener) *server {
+// serve serves the app on listener, through gas.App.ServeListener, and
+// returns once gas reports it listening (gas.SystemServerListening). A
+// Stop before ServeListener has begun would make it return
+// gas.ErrShutDown, so a test that stops the server at once must not race
+// it.
+func serve(t *testing.T, a *gas.App, listener net.Listener) *server {
+	t.Helper()
 	addr := listener.Addr().String()
 
 	srv := &server{
@@ -150,10 +149,22 @@ func serve(a *gas.App, listener net.Listener) *server {
 		URL:      "http://" + addr,
 	}
 
+	listening := make(chan struct{})
+	var once sync.Once
+	a.EventBus().Subscribe[gas.SystemServerListening](func(gas.SystemServerListeningPayload) {
+		once.Do(func() { close(listening) })
+	})
 	go func() {
-		srv.served <- a.Server().Serve(listener)
+		srv.served <- a.ServeListener(listener)
 	}()
 
+	select {
+	case <-listening:
+	case err := <-srv.served:
+		t.Fatalf("serve: %v (stop: %v)", err, a.Stop(context.Background()))
+	case <-time.After(clientTimeout):
+		t.Fatalf("not listening within %v (stop: %v)", clientTimeout, a.Stop(context.Background()))
+	}
 	return srv
 }
 
@@ -186,11 +197,11 @@ func (s *server) Stop(t *testing.T) {
 		t.Errorf("stop app: %v", err)
 	}
 
-	// A graceful shutdown ends Serve with ErrServerClosed; anything else is a
+	// A graceful shutdown ends ServeListener with nil; anything else is a
 	// real failure.
 	select {
 	case err := <-s.served:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err != nil {
 			t.Errorf("serve: %v", err)
 		}
 	case <-time.After(clientTimeout):
