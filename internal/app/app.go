@@ -4,11 +4,9 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gasmod/gas"
@@ -50,7 +48,7 @@ func New(cfg *Config, extra ...gas.Option) (*gas.App, error) {
 		return nil, pErr
 	}
 
-	rs, rErr := newRotationSettings(cfg, logger)
+	rs, rErr := newRotationSettings(app, cfg, logger)
 	if rErr != nil {
 		return nil, rErr
 	}
@@ -93,18 +91,15 @@ const functionsTimeout = 16 * time.Minute
 
 // newRotationSettings returns the rotation service's settings: an invoker
 // for the functions endpoint, or none, when it is not set, to leave
-// rotation unserved, and the wait for the server to listen.
-func newRotationSettings(cfg *Config, logger gas.Logger) (rotation.Settings, error) {
+// rotation unserved, and the wait for app's server to listen.
+func newRotationSettings(app *gas.App, cfg *Config, logger gas.Logger) (rotation.Settings, error) {
 	rs := rotation.Settings{Clock: cfg.rotationClock}
 	if cfg.Store.FunctionsEndpoint == "" {
 		return rs, nil
 	}
-	addr, err := serverAddr(cfg)
-	if err != nil {
-		return rs, err
-	}
+	listening := subscribeListening(app)
 	rs.WaitServing = func(ctx context.Context) error {
-		return waitListening(ctx, addr, logger, listenWarnAfter, listenWarnEvery)
+		return waitListening(ctx, listening, logger, listenWarnAfter, listenWarnEvery)
 	}
 	c, err := serviceinvoke.New(serviceinvoke.Config{
 		HTTPClient:      &http.Client{Timeout: functionsTimeout},
@@ -155,91 +150,52 @@ func installMiddleware(
 	installUnrouted(r)
 }
 
-// serverAddr is the address the server is to listen on, from the Server
-// settings gas serves with, as an address to dial (see dialAddr).
-func serverAddr(cfg *Config) (string, error) {
-	var bound struct {
-		Server struct {
-			Host string
-			Port int
-		}
-	}
-	if err := cfg.store.Bind(&bound); err != nil {
-		return "", fmt.Errorf("config: the server address: %w", err)
-	}
-	return dialAddr(bound.Server.Host, bound.Server.Port)
-}
-
-// errPortZero refuses a server port of 0 with a functions endpoint. gas
-// lets port 0 pick a free port, but exposes neither the listener nor the
-// port it ends up on, so the rotation service could never find the server
-// to wait for, and no rotation would ever run.
-var errPortZero = errors.New("config: TULE_Server_Port 0 picks a free port, which the " +
-	"rotation service cannot find to wait for before it invokes a rotation function; " +
-	"set a fixed TULE_Server_Port when TULE_Store_FunctionsEndpoint is set")
-
-// dialAddr is the address to dial to reach a server listening on host and
-// port: every interface, gas's default, is dialed on loopback, as is an
-// empty host; a named host or an address is dialed as it is. Port 0 is
-// refused (errPortZero).
-func dialAddr(host string, port int) (string, error) {
-	if port == 0 {
-		return "", errPortZero
-	}
-	switch host {
-	case "", "0.0.0.0":
-		host = "127.0.0.1"
-	case "::":
-		host = "::1"
-	}
-	return net.JoinHostPort(host, strconv.Itoa(port)), nil
-}
-
-// listenPoll is how often waitListening dials the server. listenWarnAfter
-// is how long it waits before it says so in the log, and listenWarnEvery
-// how often it says so again.
+// listenWarnAfter is how long waitListening waits before it says so in the
+// log, and listenWarnEvery how often it says so again.
 const (
-	listenPoll      = 100 * time.Millisecond
 	listenWarnAfter = 5 * time.Second
 	listenWarnEvery = 30 * time.Second
 )
 
-// waitListening returns once addr accepts a connection, or with ctx's
-// error. gas has no event for the server starting to serve: Start, which
-// initializes the services, returns before the server listens, so the
-// rotation service, which may resume rotations at Init, waits here before
-// invoking any function, whose calls back would otherwise be refused.
-// Once it has waited warnAfter, it logs a warning naming addr, and again
-// every warnEvery, so a server that never listens there is not a silent
-// stall.
+// subscribeListening returns a channel closed once the app's server
+// listens: gas emits SystemServerListening once Serve or ServeListener has
+// bound the listener, which is after Start, where the services, and so the
+// rotations resumed at Init, start. The subscription is the app's, not the
+// rotation service's, so it outlives a RestartService of that service,
+// which would otherwise subscribe again after the one-shot event.
+func subscribeListening(app *gas.App) <-chan struct{} {
+	listening := make(chan struct{})
+	var once sync.Once
+	app.EventBus().Subscribe[gas.SystemServerListening](func(gas.SystemServerListeningPayload) {
+		once.Do(func() { close(listening) })
+	})
+	return listening
+}
+
+// waitListening returns once listening is closed, or with ctx's error. The
+// rotation service waits here before invoking any function, whose calls
+// back would otherwise be refused. Once it has waited warnAfter, it logs a
+// warning, and again every warnEvery, so a server that never listens is
+// not a silent stall.
 func waitListening(
 	ctx context.Context,
-	addr string,
+	listening <-chan struct{},
 	logger gas.Logger,
 	warnAfter, warnEvery time.Duration,
 ) error {
-	var d net.Dialer
 	started := time.Now()
-	nextWarn := started.Add(warnAfter)
+	warn := time.NewTimer(warnAfter)
+	defer warn.Stop()
 	for {
-		if now := time.Now(); !now.Before(nextWarn) {
-			logger.Warn("rotations are waiting for the server to listen; none runs until it does").
-				Str("address", addr).Duration("waited", now.Sub(started)).Send()
-			nextWarn = now.Add(warnEvery)
-		}
-		dialCtx, cancel := context.WithTimeout(ctx, time.Second)
-		conn, err := d.DialContext(dialCtx, "tcp", addr)
-		cancel()
-		if err == nil {
-			// The probe was accepted, which is all it asks; a failure to
-			// close it says nothing of the server.
-			_ = conn.Close()
-			return nil
-		}
 		select {
+		case <-listening:
+			return nil
 		case <-ctx.Done():
-			return fmt.Errorf("waiting for %s to listen: %w", addr, ctx.Err())
-		case <-time.After(listenPoll):
+			return fmt.Errorf("waiting for the server to listen: %w", ctx.Err())
+		case <-warn.C:
+			logger.Warn("rotations are waiting for the server to listen; none runs until it does").
+				Duration("waited", time.Since(started)).Send()
+			warn.Reset(warnEvery)
 		}
 	}
 }

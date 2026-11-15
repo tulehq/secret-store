@@ -85,9 +85,6 @@ identity, identity's root key. Configure the two services with the same key,
 as for identity. A call has no timeout of its own below 16 minutes, since a
 step runs as long as the function, up to its 900-second limit.
 
-Set, it needs a fixed `TULE_Server_Port`: the server refuses to start with
-port `0` (see [Restarts](#restarts)).
-
 Unset, `RotateSecret` and `CancelRotateSecret` answer `501
 NotImplementedException` to every caller, without evaluating any policy, as
 before; nothing is scheduled, and a rotation a previous run left in progress
@@ -170,6 +167,19 @@ policy` or `... because no resource-based policy allows the <action> action`
 kinds deny, the identity-based one is named. The resource in the message is the `SecretId` (or `Name`) as the
 request gave it, as Secrets Manager's own messages show it, or `*`; the
 policy is evaluated on the secret's full ARN.
+
+### Changes from v0.6.0
+
+- **`TULE_Server_Port=0` is accepted with `TULE_Store_FunctionsEndpoint`**,
+  which v0.6.0 refused at startup: rotations now wait for gas's event that
+  the server listens, on whatever port it bound, rather than dialing the
+  configured address ([Restarts](#restarts)). Their warning while they wait
+  no longer names an address.
+- **The `server started` log is written once the port is bound**, and its
+  `addr` is the bound address (such as `[::]:9010`, with the port the system
+  chose for port `0`) where it was the configured one (`:9010`); it also has
+  a `tls` field. A port that cannot be bound is no longer logged as started
+  (gas v0.10.0).
 
 ### Changes from v0.5.0
 
@@ -947,15 +957,11 @@ starts with a functions endpoint, every rotation it finds is resumed, from
 one; an attempt a shutdown interrupted does not count as failed. No
 rotation, resumed or new, invokes its function before the server listens:
 gas initializes the services, which resumes the rotations, before it
-serves, and has no event for the server starting to serve, so the rotation
-service dials the configured `TULE_Server_Host` and `TULE_Server_Port`
-(loopback for every interface, gas's default, and for `::`) until a
-connection is accepted, and only then invokes anything. While it waits
-longer than 5 seconds it logs a warning naming the address, and again
-every 30 seconds. `TULE_Server_Port=0`, which gas takes to pick a free
-port, is refused at startup when `TULE_Store_FunctionsEndpoint` is set,
-since gas does not tell the port it picked, and the wait could never end. A function that calls back at
-once is therefore never refused and made to waste an attempt. So a restart
+serves, so the rotation service waits for gas's event that the server has
+bound its listener, and only then invokes anything. While it waits longer
+than 5 seconds it logs a warning, and again every 30 seconds. A function
+that calls back at once is therefore never refused and made to waste an
+attempt. So a restart
 never leaves a secret in progress for good: every rotation ends after its
 attempts. A rotation is also never left recorded with nothing running it:
 a failure to record an attempt's end is retried every minute, and only the
